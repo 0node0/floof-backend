@@ -1,0 +1,9 @@
+node_modules
+.env
+.git
+dist
+.medusa
+*.log
+.DS_Store
+uploads
+.cache
