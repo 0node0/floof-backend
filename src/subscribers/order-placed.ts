@@ -91,15 +91,21 @@ export default async function orderPlacedHandler({
       `[order-placed] Printful order confirmed: ${confirmed?.id} status=${confirmed?.status}`
     )
 
-    await eventBus.emit("printful.order_submitted", {
-      order_id: orderId,
-      printful_order_id: confirmed?.id || draft?.id,
+    await eventBus.emit({
+      name: "printful.order_submitted",
+      data: {
+        order_id: orderId,
+        printful_order_id: confirmed?.id || draft?.id,
+      },
     })
   } catch (err: any) {
     logger.error(`[order-placed] Printful submission failed for ${orderId}: ${err.message}`)
-    await eventBus.emit("printful.order_failed", {
-      order_id: orderId,
-      reason: err.message,
+    await eventBus.emit({
+      name: "printful.order_failed",
+      data: {
+        order_id: orderId,
+        reason: err.message,
+      },
     })
   }
 }

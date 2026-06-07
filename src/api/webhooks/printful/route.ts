@@ -76,13 +76,13 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   try {
     switch (type) {
       case "shipment_sent":
-        await eventBus.emit("printful.shipment_sent", data)
+        await eventBus.emit({ name: "printful.shipment_sent", data })
         break
       case "order_updated":
-        await eventBus.emit("printful.order_updated", data)
+        await eventBus.emit({ name: "printful.order_updated", data })
         break
       case "stock_updated":
-        await eventBus.emit("printful.stock_updated", data)
+        await eventBus.emit({ name: "printful.stock_updated", data })
         break
       default:
         logger.info(`[printful-webhook] Unhandled event type: ${type}`)

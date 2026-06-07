@@ -60,19 +60,25 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     switch (event.type) {
       case "payment_intent.succeeded": {
         const intent = event.data.object as any
-        await eventBus.emit("stripe.payment_succeeded", {
-          payment_intent_id: intent.id,
-          amount: intent.amount,
-          currency: intent.currency,
-          metadata: intent.metadata,
+        await eventBus.emit({
+          name: "stripe.payment_succeeded",
+          data: {
+            payment_intent_id: intent.id,
+            amount: intent.amount,
+            currency: intent.currency,
+            metadata: intent.metadata,
+          },
         })
         break
       }
       case "payment_intent.payment_failed": {
         const intent = event.data.object as any
-        await eventBus.emit("stripe.payment_failed", {
-          payment_intent_id: intent.id,
-          metadata: intent.metadata,
+        await eventBus.emit({
+          name: "stripe.payment_failed",
+          data: {
+            payment_intent_id: intent.id,
+            metadata: intent.metadata,
+          },
         })
         break
       }
