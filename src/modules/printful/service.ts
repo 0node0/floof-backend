@@ -128,7 +128,7 @@ export class PrintfulModuleService {
 
       const optionMap = new Map<string, Set<string>>()
       for (const v of variants) {
-        for (const [name, value] of Object.entries(v.options)) {
+        for (const [name, value] of Object.entries(v.options) as [string, string][]) {
           if (!optionMap.has(name)) optionMap.set(name, new Set())
           optionMap.get(name)!.add(value)
         }
