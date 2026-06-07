@@ -31,8 +31,18 @@ export default defineConfig({
       },
     },
     {
-      resolve: "./src/modules/fulfillment-printful",
-      options: { apiToken: process.env.PRINTFUL_API_TOKEN! },
+      resolve: "@medusajs/medusa/fulfillment",
+      options: {
+        providers: [
+          {
+            resolve: "./src/modules/fulfillment-printful",
+            id: "printful",
+            options: {
+              apiToken: process.env.PRINTFUL_API_TOKEN!,
+            },
+          },
+        ],
+      },
     },
     {
       resolve: "./src/modules/printful",
