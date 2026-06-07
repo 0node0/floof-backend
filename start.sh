@@ -12,4 +12,4 @@ npx medusa db:migrate 2>/dev/null || {
 
 # Boot the Medusa server
 echo "[start] Starting Medusa server..."
-exec node main.js
+exec npx medusa start
