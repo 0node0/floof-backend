@@ -1,4 +1,5 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/medusa"
+import type { IEventBusModuleService } from "@medusajs/framework/types"
 
 /**
  * order.placed → submit the order to Printful for production.
@@ -11,7 +12,7 @@ export default async function orderPlacedHandler({
   const orderId = event.data.order_id
   const logger = container.resolve("logger")
   const query = container.resolve("query")
-  const eventBus = container.resolve("eventBusService")
+  const eventBus = container.resolve("eventBusService") as IEventBusModuleService
 
   let printful: any
   try {

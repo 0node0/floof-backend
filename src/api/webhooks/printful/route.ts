@@ -1,5 +1,6 @@
 import { createHmac, timingSafeEqual } from "crypto"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import type { IEventBusModuleService } from "@medusajs/framework/types"
 
 const rateLimit = new Map<string, { count: number; resetAt: number }>()
 function checkRateLimit(key: string, max = 120, windowMs = 60_000): boolean {
@@ -35,7 +36,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   const container = req.scope
-  const eventBus = container.resolve("eventBusService")
+  const eventBus = container.resolve("eventBusService") as IEventBusModuleService
   const logger = container.resolve("logger")
 
   // Get raw body

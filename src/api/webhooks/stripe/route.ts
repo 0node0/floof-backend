@@ -1,4 +1,5 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import type { IEventBusModuleService } from "@medusajs/framework/types"
 
 // Simple in-memory rate limiter (per IP)
 const rateLimit = new Map<string, { count: number; resetAt: number }>()
@@ -30,7 +31,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   }
 
   const container = req.scope
-  const eventBus = container.resolve("eventBusService")
+  const eventBus = container.resolve("eventBusService") as IEventBusModuleService
   const logger = container.resolve("logger")
 
   // Get the raw body — required for signature verification
