@@ -35,8 +35,15 @@ export class PrintfulFulfillmentService extends AbstractFulfillmentProviderServi
     return true
   }
 
-  async calculatePrice(_optionData: any, data: any, _context: any): Promise<number> {
-    return (data as any)?.calculated_rate ?? 0
+  async calculatePrice(
+    _optionData: any,
+    data: any,
+    _context: any
+  ): Promise<{ calculated_amount: number; is_calculated_price_tax_inclusive: boolean }> {
+    return {
+      calculated_amount: (data as any)?.calculated_rate ?? 0,
+      is_calculated_price_tax_inclusive: false,
+    }
   }
 
   async createFulfillment(_data: any, _items: any, _order: any, _fulfillment: any): Promise<any> {
