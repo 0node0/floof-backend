@@ -15,20 +15,23 @@ function checkRateLimit(key: string, max = 120, windowMs = 60_000): boolean {
 }
 
 /**
- * POST /webhooks/printful/:secretPath
+ * POST /webhooks/printful/:secret
  *
  * Printful's webhook API does NOT use HMAC signatures — it relies entirely
- * on the URL being unguessable. The full URL (including a random hex path)
- * is registered with Printful via POST /webhooks, and any request to that
- * exact URL is treated as authentic.
+ * on the URL being unguessable. The full URL (including a random hex path
+ * segment) is registered with Printful via POST /webhooks, and any
+ * request to that exact URL is treated as authentic.
  *
- * To enable extra defense-in-depth, we verify that the trailing path
- * segment matches the PRINTFUL_WEBHOOK_PATH env var. If the env var is
- * not set, we accept any request to the base /webhooks/printful endpoint
+ * To enable extra defense-in-depth, we verify that the `:secret` path
+ * param matches the PRINTFUL_WEBHOOK_PATH env var. If the env var is
+ * not set, we accept any request to /webhooks/printful/<anything>
  * (less secure — only useful for local dev / curl testing).
  *
+ * The Medusa file-based router extracts the path segment into
+ * `req.params.secret` because this file lives in the [secret] folder.
+ *
  * Printful sends events like:
- *   - package_shipped   (the only one we subscribed to initially)
+ *   - package_shipped
  *   - order_failed
  *   - order_canceled
  *
@@ -52,22 +55,23 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const logger = container.resolve("logger")
 
   // ---- Path-based auth ----
-  // req.path is something like "/webhooks/printful/b066c4b5..."
+  // The Medusa file-based router puts the [secret] segment into req.params.secret
   const configuredPath = process.env.PRINTFUL_WEBHOOK_PATH || ""
-  const requestPath = req.path || ""
-  const requestTail = requestPath.replace(/^\/webhooks\/printful\/?/, "").replace(/\/$/, "")
+  const requestSecret = (req.params as any)?.secret || ""
 
   if (configuredPath) {
-    // Constant-time compare to avoid timing attacks
-    if (requestTail.length !== configuredPath.length || requestTail !== configuredPath) {
+    if (
+      requestSecret.length !== configuredPath.length ||
+      requestSecret !== configuredPath
+    ) {
       logger.warn(
-        `[printful-webhook] Path mismatch: request=${requestPath} configured_tail=${configuredPath.slice(0, 8)}...`
+        `[printful-webhook] Path mismatch: request_secret_len=${requestSecret.length} configured_len=${configuredPath.length}`
       )
       return res.status(404).json({ error: "Not found" })
     }
   } else {
     logger.warn(
-      "[printful-webhook] PRINTFUL_WEBHOOK_PATH not configured — accepting any request to /webhooks/printful (DEV ONLY)"
+      "[printful-webhook] PRINTFUL_WEBHOOK_PATH not configured — accepting any request to /webhooks/printful/<anything> (DEV ONLY)"
     )
   }
 
@@ -115,15 +119,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   const configuredPath = process.env.PRINTFUL_WEBHOOK_PATH || ""
-  const requestPath = req.path || ""
-  const requestTail = requestPath
-    .replace(/^\/webhooks\/printful\/?/, "")
-    .replace(/\/$/, "")
+  const requestSecret = (req.params as any)?.secret || ""
 
-  const match = !configuredPath || requestTail === configuredPath
+  const match = !configuredPath || requestSecret === configuredPath
   return res.status(match ? 200 : 404).json({
     ok: match,
     configured: !!configuredPath,
-    requestPath,
+    requestSecretLength: requestSecret.length,
   })
 }
