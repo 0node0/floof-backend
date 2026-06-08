@@ -1,20 +1,27 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/medusa"
 
 /**
- * printful.shipment_sent → save tracking info on the order metadata.
+ * printful.package_shipped → save tracking info on the order metadata.
+ *
+ * Note: Printful renamed this event from "shipment_sent" (old) to
+ * "package_shipped" (current). Our webhook route forwards it as
+ * `printful.package_shipped` to match Printful's actual type.
+ *
  * v1 only logs the email that would be sent; v2 wires Resend/Postmark.
+ *
+ * The webhook handler wraps Printful's payload as:
+ *   { type: "package_shipped", data: { order_id, tracking_number, ... }, raw: {...} }
+ * so the actual Printful `data` object is at event.data.data.
  */
 export default async function shipmentShippedHandler({
   event,
   container,
-}: SubscriberArgs<{
-  order_id?: string
-  tracking_number?: string
-  tracking_url?: string
-  carrier?: string
-}>) {
-  const data = event.data || {}
+}: SubscriberArgs<any>) {
+  const wrapper = event.data || {}
   const logger = container.resolve("logger")
+
+  // Unwrap: webhook handler stores { type, data, raw }
+  const data = wrapper.data || wrapper
 
   const orderId = data.order_id
   if (!orderId) {
@@ -31,5 +38,5 @@ export default async function shipmentShippedHandler({
 }
 
 export const config: SubscriberConfig = {
-  event: "printful.shipment_sent",
+  event: "printful.package_shipped",
 }
