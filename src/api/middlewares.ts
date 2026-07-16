@@ -1,7 +1,7 @@
-import { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { defineMiddlewares } from "@medusajs/framework/http"
+import type { MedusaRequest, MedusaResponse, MedusaNextFunction } from "@medusajs/framework/http"
 
 // In-memory rate limiter — fine for Railway's single-node deployment.
-// For multi-node, swap to Redis-based (use REDIS_URL from env).
 const store = new Map<string, { count: number; resetAt: number }>()
 
 function rateLimit(key: string, maxRequests: number, windowMs: number): boolean {
@@ -22,13 +22,13 @@ setInterval(() => {
   for (const [key, entry] of store) {
     if (now > entry.resetAt) store.delete(key)
   }
-}, 300_000)
+}, 300_000).unref?.()
 
-/**
- * Rate-limits all /store/* routes at 60 requests per minute per IP.
- * Returns 429 when exceeded.
- */
-export async function storeRateLimit(req: MedusaRequest, res: MedusaResponse): Promise<void> {
+async function storeRateLimit(
+  req: MedusaRequest,
+  res: MedusaResponse,
+  next: MedusaNextFunction
+) {
   const ip =
     (req.headers["x-forwarded-for"] as string | undefined)?.split(",")[0]?.trim() ||
     (req as any).ip ||
@@ -38,4 +38,24 @@ export async function storeRateLimit(req: MedusaRequest, res: MedusaResponse): P
     res.status(429).json({ error: "Too many requests — please slow down" })
     return
   }
+  next()
 }
+
+/**
+ * Medusa middleware config:
+ *  - Preserve raw body for Stripe signature verification
+ *  - Rate-limit /store/* at 60 req/min per IP
+ */
+export default defineMiddlewares({
+  routes: [
+    {
+      method: ["POST"],
+      matcher: "/webhooks/stripe",
+      bodyParser: { preserveRawBody: true },
+    },
+    {
+      matcher: "/store/*",
+      middlewares: [storeRateLimit],
+    },
+  ],
+})

@@ -1,11 +1,11 @@
-import { createHmac } from "crypto"
-
 export class PrintfulApiClient {
   private baseUrl = "https://api.printful.com"
   private apiToken: string
+  private storeId: string
 
-  constructor(apiToken: string) {
+  constructor(apiToken: string, storeId?: string) {
     this.apiToken = apiToken
+    this.storeId = storeId || process.env.PRINTFUL_STORE_ID || ""
   }
 
   async get<T = any>(path: string): Promise<T> {
@@ -34,20 +34,15 @@ export class PrintfulApiClient {
     return (json.result ?? json) as T
   }
 
-  /**
-   * Generate a base64 HMAC-SHA256 signature of a raw webhook body.
-   * Printful's webhook signing uses the same algorithm with the secret
-   * you configured in your Printful store's webhook settings.
-   */
-  signWebhookBody(rawBody: string, secret: string): string {
-    return createHmac("sha256", secret).update(rawBody).digest("base64")
-  }
-
-  private headers() {
-    return {
+  private headers(): Record<string, string> {
+    const h: Record<string, string> = {
       Authorization: `Bearer ${this.apiToken}`,
-      "X-PF-Store-Id": "",
     }
+    // Private store tokens usually don't need this; OAuth / multi-store tokens do.
+    if (this.storeId) {
+      h["X-PF-Store-Id"] = this.storeId
+    }
+    return h
   }
 }
 

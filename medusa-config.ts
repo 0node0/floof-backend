@@ -2,6 +2,10 @@ import { defineConfig, loadEnv } from "@medusajs/framework/utils"
 
 loadEnv(process.env.NODE_ENV || "development", process.cwd())
 
+const printfulToken =
+  process.env.PRINTFUL_API_TOKEN || process.env.PRINTFUL_API_KEY || ""
+const printfulStoreId = process.env.PRINTFUL_STORE_ID || ""
+
 export default defineConfig({
   projectConfig: {
     databaseUrl: process.env.DATABASE_URL!,
@@ -38,7 +42,8 @@ export default defineConfig({
             resolve: "./src/modules/fulfillment-printful",
             id: "printful",
             options: {
-              apiToken: process.env.PRINTFUL_API_TOKEN!,
+              apiToken: printfulToken,
+              storeId: printfulStoreId,
             },
           },
         ],
@@ -46,7 +51,10 @@ export default defineConfig({
     },
     {
       resolve: "./src/modules/printful",
-      options: { apiToken: process.env.PRINTFUL_API_TOKEN! },
+      options: {
+        apiToken: printfulToken,
+        storeId: printfulStoreId,
+      },
     },
   ],
 })

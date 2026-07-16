@@ -56,7 +56,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   // ---- Path-based auth ----
   // The Medusa file-based router puts the [secret] segment into req.params.secret
-  const configuredPath = process.env.PRINTFUL_WEBHOOK_PATH || ""
+  const configuredPath =
+    process.env.PRINTFUL_WEBHOOK_PATH || process.env.PRINTFUL_WEBHOOK_SECRET || ""
   const requestSecret = (req.params as any)?.secret || ""
 
   if (configuredPath) {
@@ -118,7 +119,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
  * the path check is wired correctly without triggering a real event).
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
-  const configuredPath = process.env.PRINTFUL_WEBHOOK_PATH || ""
+  const configuredPath =
+    process.env.PRINTFUL_WEBHOOK_PATH || process.env.PRINTFUL_WEBHOOK_SECRET || ""
   const requestSecret = (req.params as any)?.secret || ""
 
   const match = !configuredPath || requestSecret === configuredPath

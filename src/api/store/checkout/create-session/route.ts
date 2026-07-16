@@ -72,17 +72,27 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       quantity: item.quantity,
     }))
 
-    // Create the Checkout Session
+    if (lineItems.length === 0) {
+      return res.status(400).json({ error: "Cart has no line items" })
+    }
+
+    // Create the Checkout Session (hosted — no Elements)
     const session = await stripe.checkout.sessions.create({
       mode: "payment",
       payment_method_types: ["card"],
       line_items: lineItems,
       customer_email: cart.email || undefined,
+      client_reference_id: cart_id,
       success_url: `${return_url}?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${return_url}?canceled=true`,
       metadata: {
         cart_id,
         medusa_backend_url: backendUrl,
+      },
+      payment_intent_data: {
+        metadata: {
+          cart_id,
+        },
       },
       shipping_address_collection: {
         allowed_countries: ["US"],

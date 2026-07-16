@@ -2,6 +2,7 @@ import PrintfulApiClient from "./client"
 
 type PrintfulModuleOptions = {
   apiToken: string
+  storeId?: string
 }
 
 type FloofCategory = "tees" | "hoodies" | "hats" | "accessories"
@@ -10,16 +11,18 @@ function deriveCategory(printfulType: string | undefined): FloofCategory {
   const t = (printfulType || "").toLowerCase()
   if (t.includes("hoodie") || t.includes("sweatshirt")) return "hoodies"
   if (t.includes("hat") || t.includes("cap") || t.includes("beanie")) return "hats"
-  if (t.includes("sticker") || t.includes("mug") || t.includes("poster") || t.includes("tote")) return "accessories"
+  if (
+    t.includes("sticker") ||
+    t.includes("mug") ||
+    t.includes("poster") ||
+    t.includes("tote")
+  )
+    return "accessories"
   return "tees"
 }
 
 function derivePhrase(title: string): string {
-  return title
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 3)
-    .join(" ")
+  return title.split(/\s+/).filter(Boolean).slice(0, 3).join(" ")
 }
 
 export class PrintfulModuleService {
@@ -27,7 +30,10 @@ export class PrintfulModuleService {
   public readonly identifier = "printful"
 
   constructor(_container: any, options: PrintfulModuleOptions) {
-    this.client = new PrintfulApiClient(options.apiToken)
+    this.client = new PrintfulApiClient(
+      options.apiToken,
+      options.storeId || process.env.PRINTFUL_STORE_ID
+    )
   }
 
   // ---- Catalog ----
@@ -81,11 +87,6 @@ export class PrintfulModuleService {
 
   // ---- Sync mapping ----
 
-  /**
-   * Map a Printful product to a Medusa product shape.
-   * Adds `category` and `phrase` so the storefront can render
-   * the right category bucket and short tagline.
-   */
   async getProductForSync(printfulProductId: number): Promise<{
     title: string
     handle: string
@@ -141,7 +142,8 @@ export class PrintfulModuleService {
           .replace(/[^a-z0-9]+/g, "-")
           .replace(/^-|-$/g, ""),
         description:
-          product.description || `Premium ${product.name} from Floof — printed fresh, ships from the US.`,
+          product.description ||
+          `Premium ${product.name} from Floof — printed fresh, ships from the US.`,
         images: product.product?.image ? [{ url: product.product.image }] : [],
         variants,
         options: Array.from(optionMap.entries()).map(([title, values]) => ({

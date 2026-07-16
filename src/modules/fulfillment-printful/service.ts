@@ -5,6 +5,7 @@ import { PrintfulApiClient } from "../printful/client"
 
 type ModuleOptions = {
   apiToken: string
+  storeId?: string
 }
 
 export class PrintfulFulfillmentService extends AbstractFulfillmentProviderService {
@@ -13,7 +14,10 @@ export class PrintfulFulfillmentService extends AbstractFulfillmentProviderServi
 
   constructor(_container: any, options: ModuleOptions) {
     super()
-    this.client = new PrintfulApiClient(options.apiToken)
+    this.client = new PrintfulApiClient(
+      options.apiToken,
+      options.storeId || process.env.PRINTFUL_STORE_ID
+    )
   }
 
   async getFulfillmentOptions(): Promise<any[]> {

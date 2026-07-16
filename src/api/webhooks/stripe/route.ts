@@ -1,5 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import type { IEventBusModuleService } from "@medusajs/framework/types"
+import { fulfillCheckoutSession } from "../../../lib/checkout-complete"
 
 // Simple in-memory rate limiter (per IP)
 const rateLimit = new Map<string, { count: number; resetAt: number }>()
@@ -18,8 +19,11 @@ function checkRateLimit(key: string, max = 120, windowMs = 60_000): boolean {
 /**
  * POST /webhooks/stripe
  *
- * Stripe webhook receiver. Verifies the signature, then emits a
- * Medusa event so downstream subscribers can react.
+ * Stripe webhook receiver. Verifies the signature, then:
+ *  - checkout.session.completed → create Medusa order + emit order.placed
+ *  - payment_intent.* → emit events for optional listeners
+ *
+ * Requires bodyParser.preserveRawBody on this route (see src/api/middlewares.ts).
  */
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const ip =
@@ -34,7 +38,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const eventBus = container.resolve("eventBusService") as IEventBusModuleService
   const logger = container.resolve("logger")
 
-  // Get the raw body — required for signature verification
+  // Raw body required for signature verification (preserveRawBody middleware)
   const rawBody: string =
     (req as any).rawBody ||
     (Buffer.isBuffer(req.body) ? (req.body as Buffer).toString("utf8") : JSON.stringify(req.body))
@@ -58,6 +62,25 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const event = stripe.webhooks.constructEvent(rawBody, signature, webhookSecret)
 
     switch (event.type) {
+      case "checkout.session.completed": {
+        const session = event.data.object as any
+        logger.info(
+          `[stripe-webhook] checkout.session.completed ${session.id} cart=${session.metadata?.cart_id}`
+        )
+        try {
+          const { orderId, skipped } = await fulfillCheckoutSession(container, session)
+          logger.info(
+            `[stripe-webhook] checkout complete → order=${orderId || "none"} skipped=${!!skipped}`
+          )
+        } catch (err: any) {
+          // Log but return 200 so Stripe does not hammer retries while we debug;
+          // critical path errors still surface in Railway logs.
+          logger.error(
+            `[stripe-webhook] fulfillCheckoutSession failed: ${err.message}`
+          )
+        }
+        break
+      }
       case "payment_intent.succeeded": {
         const intent = event.data.object as any
         await eventBus.emit({
