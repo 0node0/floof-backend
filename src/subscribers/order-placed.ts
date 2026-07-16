@@ -73,19 +73,35 @@ export default async function orderPlacedHandler({
       return
     }
 
+    // Prefer sync_variant_id from metadata; fall back to PF-{id} SKU parsing
     const items = (order.items || [])
-      .filter((item: any) => {
-        const sku = item.variant?.sku || item.metadata?.sku || ""
-        return String(sku).startsWith("PF-")
+      .map((item: any) => {
+        const sku = String(item.variant?.sku || item.metadata?.sku || "")
+        const metaId =
+          item.variant?.metadata?.printful_sync_variant_id ||
+          item.metadata?.printful_sync_variant_id
+        let syncVariantId: number | null = metaId ? Number(metaId) : null
+        if (!syncVariantId && sku.startsWith("PF-")) {
+          const n = parseInt(sku.slice(3), 10)
+          if (!Number.isNaN(n)) syncVariantId = n
+        }
+        if (!syncVariantId) return null
+        return {
+          sync_variant_id: syncVariantId,
+          quantity: item.quantity,
+          retail_price: ((item.unit_price || 0) / 100).toFixed(2),
+        }
       })
-      .map((item: any) => ({
-        external_variant_id: item.variant?.sku || item.metadata?.sku,
-        quantity: item.quantity,
-        retail_price: ((item.unit_price || 0) / 100).toFixed(2),
-      }))
+      .filter(Boolean) as {
+      sync_variant_id: number
+      quantity: number
+      retail_price: string
+    }[]
 
     if (items.length === 0) {
-      logger.warn(`[order-placed] Order ${orderId} has no Printful items (PF-* SKUs) — skipping`)
+      logger.warn(
+        `[order-placed] Order ${orderId} has no Printful items (need PF-* SKU or printful_sync_variant_id) — skipping`
+      )
       return
     }
 

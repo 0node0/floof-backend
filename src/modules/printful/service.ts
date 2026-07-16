@@ -68,7 +68,11 @@ export class PrintfulModuleService {
   async createOrder(payload: {
     external_id: string
     recipient: Record<string, string>
-    items: { external_variant_id: string; quantity: number; retail_price: string }[]
+    items: Array<
+      | { sync_variant_id: number; quantity: number; retail_price?: string }
+      | { external_variant_id: string; quantity: number; retail_price?: string }
+      | { variant_id: number; quantity: number; retail_price?: string; files?: any[] }
+    >
   }): Promise<any> {
     return await this.client.post("/orders", payload)
   }
