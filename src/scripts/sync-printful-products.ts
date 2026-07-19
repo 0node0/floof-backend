@@ -177,6 +177,13 @@ export default async function syncPrintfulProducts({ container }: ExecArgs) {
       continue
     }
 
+    const lower = name.toLowerCase()
+    const category = lower.includes("hoodie") || lower.includes("sweatshirt")
+      ? "hoodies"
+      : lower.includes("hat") || lower.includes("cap") || lower.includes("beanie")
+        ? "hats"
+        : "tees"
+
     const productInput: any = {
       title: name,
       handle,
@@ -190,7 +197,7 @@ export default async function syncPrintfulProducts({ container }: ExecArgs) {
       sales_channels: [{ id: channel.id }],
       metadata: {
         printful_product_id: syncProduct.id || item.id,
-        category: "tees",
+        category,
         phrase,
       },
     }
