@@ -12,12 +12,7 @@ export class PrintfulApiClient {
     const res = await fetch(`${this.baseUrl}${path}`, {
       headers: this.headers(),
     })
-    if (!res.ok) {
-      const body = await res.text()
-      throw new Error(`Printful GET ${path} -> ${res.status}: ${body}`)
-    }
-    const json = await res.json()
-    return (json.result ?? json) as T
+    return this.parse<T>(res, `GET ${path}`)
   }
 
   async post<T = any>(path: string, data: unknown): Promise<T> {
@@ -26,9 +21,30 @@ export class PrintfulApiClient {
       headers: { ...this.headers(), "Content-Type": "application/json" },
       body: JSON.stringify(data),
     })
+    return this.parse<T>(res, `POST ${path}`)
+  }
+
+  async put<T = any>(path: string, data: unknown): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "PUT",
+      headers: { ...this.headers(), "Content-Type": "application/json" },
+      body: JSON.stringify(data),
+    })
+    return this.parse<T>(res, `PUT ${path}`)
+  }
+
+  async delete<T = any>(path: string): Promise<T> {
+    const res = await fetch(`${this.baseUrl}${path}`, {
+      method: "DELETE",
+      headers: this.headers(),
+    })
+    return this.parse<T>(res, `DELETE ${path}`)
+  }
+
+  private async parse<T>(res: Response, label: string): Promise<T> {
     if (!res.ok) {
       const body = await res.text()
-      throw new Error(`Printful POST ${path} -> ${res.status}: ${body}`)
+      throw new Error(`Printful ${label} -> ${res.status}: ${body}`)
     }
     const json = await res.json()
     return (json.result ?? json) as T
@@ -38,7 +54,6 @@ export class PrintfulApiClient {
     const h: Record<string, string> = {
       Authorization: `Bearer ${this.apiToken}`,
     }
-    // Private store tokens usually don't need this; OAuth / multi-store tokens do.
     if (this.storeId) {
       h["X-PF-Store-Id"] = this.storeId
     }

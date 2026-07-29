@@ -8,6 +8,7 @@
     "dev": "medusa develop",
     "seed": "medusa exec ./src/scripts/seed.ts",
     "sync:printful": "medusa exec ./src/scripts/sync-printful-products.ts",
+    "create:from-design": "medusa exec ./src/scripts/create-from-design.ts",
     "migrate": "medusa db:migrate",
     "create:admin": "medusa user --email admin@floof.space --password changeMe123!",
     "test": "vitest run",
