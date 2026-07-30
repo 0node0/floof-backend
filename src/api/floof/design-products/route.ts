@@ -1,6 +1,7 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import {
   createProductFromDesign,
+  importPrintfulProductToMedusa,
   type CreateFromDesignInput,
   type GarmentKind,
 } from "../../../lib/product-from-design"
@@ -52,6 +53,36 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!requireAdmin(req, res)) return
 
   const body = (req.body || {}) as Record<string, any>
+
+  // Resume: import an existing Printful product that was created but never landed in Medusa
+  if (body.importPrintfulProductId) {
+    try {
+      const result = await importPrintfulProductToMedusa(
+        Number(body.importPrintfulProductId),
+        req.scope,
+        {
+          phrase: body.phrase,
+          category: body.category,
+          description: body.description,
+        }
+      )
+      res.status(201).json({
+        ok: true,
+        imported: true,
+        printful: result.printful,
+        mockups: result.mockups,
+        medusa: result.medusa,
+        storeUrl: result.medusa
+          ? `https://www.floof.space/products/${result.medusa.handle}`
+          : null,
+        logs: result.logs,
+      })
+    } catch (e: any) {
+      console.error("[floof/design-products import]", e)
+      res.status(500).json({ error: e.message || "Import failed" })
+    }
+    return
+  }
 
   let designUrl = (body.designUrl as string) || ""
   const name = (body.name as string) || ""
