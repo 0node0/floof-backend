@@ -113,14 +113,22 @@ function classifyGender(title: string | undefined): "male" | "female" | "neutral
  * Gallery: main = first male|female lifestyle, then up to 3 male + 3 female.
  */
 export function buildLifestyleGallery(shots: MockupShot[], extras: string[] = []): string[] {
-  const male = shots.filter((s) => s.gender === "male")
-  const female = shots.filter((s) => s.gender === "female")
+  // Prefer front-facing lifestyle shots when available
+  const frontFirst = (list: MockupShot[]) =>
+    [...list].sort((a, b) => {
+      const sf = (t?: string) => (/front/i.test(t || "") ? 0 : /back/i.test(t || "") ? 2 : 1)
+      return sf(a.title) - sf(b.title)
+    })
+
+  const male = frontFirst(shots.filter((s) => s.gender === "male"))
+  const female = frontFirst(shots.filter((s) => s.gender === "female"))
   const main = male[0] || female[0] || shots[0]
   const urls: string[] = []
   const push = (u?: string) => {
     if (u && !urls.includes(u) && !u.includes("/floof/design-files/")) urls.push(u)
   }
   if (main) push(main.url)
+  // Main is 1 model shot; then 3 more male + 3 more female lifestyle
   for (const s of male.filter((x) => x.url !== main?.url).slice(0, 3)) push(s.url)
   for (const s of female.filter((x) => x.url !== main?.url).slice(0, 3)) push(s.url)
   if (urls.length < 7) {
@@ -165,11 +173,13 @@ async function runMockupTask(
   designUrl: string,
   position: Record<string, number>,
   optionGroups: string[],
-  log: (m: string) => void
+  log: (m: string) => void,
+  /** Printful returns option="Front/Back" not the group name — pass gender from the task */
+  genderHint: "male" | "female" | "neutral" = "neutral"
 ): Promise<MockupShot[]> {
   const shots: MockupShot[] = []
   if (!optionGroups.length) return shots
-  log(`Mockup task option_groups=[${optionGroups.join(", ")}]`)
+  log(`Mockup task option_groups=[${optionGroups.join(", ")}] gender=${genderHint}`)
   const task = await client.post<any>(`/mockup-generator/create-task/${catalogProductId}`, {
     variant_ids: variantIds,
     format: "jpg",
@@ -192,31 +202,40 @@ async function runMockupTask(
     if (st === "pending" || st === "processing") continue
     if (st === "completed") {
       for (const m of status.mockups || []) {
-        const title = m.option || m.title || m.placement || ""
+        // option is usually Front/Back/Left/Right — group name is not returned
+        const view = String(m.option || m.title || m.placement || "front")
+        const groupLabel = optionGroups[0] || view
+        const title = `${groupLabel} · ${view}`
         const url = m.mockup_url || m.url
         if (url) {
           shots.push({
             url,
-            kind: classifyMockup(title, m.placement),
-            gender: classifyGender(title),
+            kind: "lifestyle",
+            gender: genderHint !== "neutral" ? genderHint : classifyGender(title),
             title,
           })
         }
         if (Array.isArray(m.extra)) {
           for (const ex of m.extra) {
             const u = ex.url || ex.mockup_url
-            const t = ex.title || ex.option || title
+            const t = `${groupLabel} · ${ex.title || ex.option || view}`
             if (u) {
               shots.push({
                 url: u,
-                kind: classifyMockup(t),
-                gender: classifyGender(t),
+                kind: "lifestyle",
+                gender: genderHint !== "neutral" ? genderHint : classifyGender(t),
                 title: t,
               })
             }
           }
         }
       }
+      // Prefer front-facing views first within this batch
+      shots.sort((a, b) => {
+        const score = (t: string) =>
+          /·\s*front/i.test(t) ? 0 : /·\s*back/i.test(t) ? 2 : 1
+        return score(a.title || "") - score(b.title || "")
+      })
     } else {
       log(`Mockup generation ended: ${st}`)
     }
@@ -301,7 +320,8 @@ export async function generateLifestyleMockups(opts: {
           designUrl,
           position,
           maleGroups.slice(0, 3),
-          log
+          log,
+          "male"
         )
       )
     }
@@ -318,7 +338,8 @@ export async function generateLifestyleMockups(opts: {
           designUrl,
           position,
           femaleGroups.slice(0, 3),
-          log
+          log,
+          "female"
         )
       )
     }
