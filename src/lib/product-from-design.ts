@@ -473,34 +473,32 @@ export async function importPrintfulProductToMedusa(
   const thumbnailUrl = gallery[0] || previewUrls[0] || syncProduct.thumbnail_url
   const images = gallery.length ? gallery : thumbnailUrl ? [thumbnailUrl] : []
 
-  // Prefer updating existing Medusa product with same printful_product_id / handle
+  // Prefer updating existing Medusa product (by printful id, handle, or SKU)
   const productModule = container.resolve(Modules.PRODUCT)
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const wantHandle = slugify(title)
+  const sampleSku = syncVariants[0] ? `PF-${syncVariants[0].id}` : null
 
   let existingProduct: { id: string; handle: string; title: string } | null = null
   try {
     const { data: prods } = await query.graph({
       entity: "product",
-      fields: ["id", "handle", "title", "metadata"],
-      filters: {},
-      pagination: { take: 200 },
+      fields: ["id", "handle", "title", "metadata", "variants.sku"],
     })
     const match = (prods || []).find((p: any) => {
       const mid = p.metadata?.printful_product_id
-      return (
-        mid == printfulProductId ||
-        mid === String(printfulProductId) ||
-        p.handle === slugify(title)
-      )
+      if (mid == printfulProductId || mid === String(printfulProductId)) return true
+      if (p.handle === wantHandle) return true
+      if (sampleSku && (p.variants || []).some((v: any) => v.sku === sampleSku)) return true
+      return false
     })
     if (match) {
       existingProduct = { id: match.id, handle: match.handle, title: match.title }
+      log(`Found existing Medusa product ${match.handle} (${match.id})`)
     }
-  } catch {
-    const byHandle = await productModule.listProducts(
-      { handle: slugify(title) },
-      { take: 1 }
-    )
+  } catch (e: any) {
+    log(`Product lookup via query failed: ${e.message}`)
+    const byHandle = await productModule.listProducts({ handle: wantHandle }, { take: 1 })
     if (byHandle[0]) {
       existingProduct = {
         id: byHandle[0].id,
@@ -524,6 +522,12 @@ export async function importPrintfulProductToMedusa(
               id: existingProduct.id,
               thumbnail: images[0],
               images: images.map((url) => ({ url })),
+              metadata: {
+                printful_product_id: printfulProductId,
+                category,
+                phrase,
+                design_pipeline: "product-from-design",
+              },
             },
           ],
         } as any,
@@ -535,8 +539,11 @@ export async function importPrintfulProductToMedusa(
       }
       log(`Updated images on ${existingProduct.handle}`)
     } catch (e: any) {
-      log(`updateProductsWorkflow failed (${e.message}) — creating new product instead`)
-      existingProduct = null
+      log(`updateProductsWorkflow failed: ${e.message}`)
+      // Do NOT create a duplicate — surface the error
+      throw new Error(
+        `Found product ${existingProduct.handle} but could not update images: ${e.message}`
+      )
     }
   }
 
