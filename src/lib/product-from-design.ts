@@ -12,7 +12,10 @@
 
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys, Modules } from "@medusajs/framework/utils"
-import { createProductsWorkflow } from "@medusajs/medusa/core-flows"
+import {
+  createProductsWorkflow,
+  updateProductsWorkflow,
+} from "@medusajs/medusa/core-flows"
 import PrintfulApiClient from "../modules/printful/client"
 
 export type GarmentKind = "tee" | "hoodie"
@@ -32,6 +35,13 @@ export type CreateFromDesignInput = {
   phrase?: string
 }
 
+export type MockupShot = {
+  url: string
+  kind: "product" | "lifestyle" | "other"
+  gender: "male" | "female" | "neutral"
+  title?: string
+}
+
 export type CreateFromDesignResult = {
   printful: {
     syncProductId: number
@@ -39,11 +49,8 @@ export type CreateFromDesignResult = {
     thumbnailUrl?: string
     variantCount: number
   }
-  mockups: {
-    url: string
-    kind: "product" | "lifestyle" | "other"
-    title?: string
-  }[]
+  mockups: MockupShot[]
+  gallery: string[]
   medusa: {
     productId: string
     handle: string
@@ -74,13 +81,7 @@ function sleep(ms: number) {
 
 function classifyMockup(title: string | undefined, extra?: string): "product" | "lifestyle" | "other" {
   const t = `${title || ""} ${extra || ""}`.toLowerCase()
-  if (
-    t.includes("lifestyle") ||
-    t.includes("men") ||
-    t.includes("women") ||
-    t.includes("model") ||
-    t.includes("couple")
-  ) {
+  if (t.includes("lifestyle") || t.includes("model") || t.includes("wearing") || t.includes("couple")) {
     return "lifestyle"
   }
   if (
@@ -92,7 +93,256 @@ function classifyMockup(title: string | undefined, extra?: string): "product" | 
   ) {
     return "product"
   }
+  if (/\bmen\b|\bwomen\b|\bmale\b|\bfemale\b/.test(t)) return "lifestyle"
   return "other"
+}
+
+function classifyGender(title: string | undefined): "male" | "female" | "neutral" {
+  const t = (title || "").toLowerCase()
+  // women before men (men is substring of women)
+  if (t.includes("women") || t.includes("woman") || t.includes("female") || t.includes("ladies")) {
+    return "female"
+  }
+  if (t.includes("men's") || t.includes("mens") || /\bmen\b|\bman\b|\bmale\b|\bguy\b/.test(t)) {
+    return "male"
+  }
+  return "neutral"
+}
+
+/**
+ * Gallery: main = first male|female lifestyle, then up to 3 male + 3 female.
+ */
+export function buildLifestyleGallery(shots: MockupShot[], extras: string[] = []): string[] {
+  const male = shots.filter((s) => s.gender === "male")
+  const female = shots.filter((s) => s.gender === "female")
+  const main = male[0] || female[0] || shots[0]
+  const urls: string[] = []
+  const push = (u?: string) => {
+    if (u && !urls.includes(u) && !u.includes("/floof/design-files/")) urls.push(u)
+  }
+  if (main) push(main.url)
+  for (const s of male.filter((x) => x.url !== main?.url).slice(0, 3)) push(s.url)
+  for (const s of female.filter((x) => x.url !== main?.url).slice(0, 3)) push(s.url)
+  if (urls.length < 7) {
+    for (const s of shots) {
+      if (urls.length >= 7) break
+      push(s.url)
+    }
+  }
+  for (const u of extras) {
+    if (urls.length >= 7) break
+    push(u)
+  }
+  return urls
+}
+
+async function permanizeMockupUrl(
+  client: PrintfulApiClient,
+  url: string,
+  log: (m: string) => void
+): Promise<string> {
+  if (url.includes("files.cdn.printful.com/files/")) return url
+  try {
+    const f = await client.post<any>("/files", { url, filename: `mockup-${Date.now()}.jpg` })
+    for (let i = 0; i < 15; i++) {
+      const polled = await client.get<any>(`/files/${f.id}`)
+      if (polled.status === "ok" || polled.status === "ready") {
+        return polled.preview_url || polled.thumbnail_url || polled.url || url
+      }
+      if (polled.status === "failed" || polled.status === "error") break
+      await sleep(1000)
+    }
+  } catch (e: any) {
+    log(`Could not permanize mockup (${e.message}) — keeping original`)
+  }
+  return url
+}
+
+async function runMockupTask(
+  client: PrintfulApiClient,
+  catalogProductId: number,
+  variantIds: number[],
+  designUrl: string,
+  position: Record<string, number>,
+  optionGroups: string[],
+  log: (m: string) => void
+): Promise<MockupShot[]> {
+  const shots: MockupShot[] = []
+  if (!optionGroups.length) return shots
+  log(`Mockup task option_groups=[${optionGroups.join(", ")}]`)
+  const task = await client.post<any>(`/mockup-generator/create-task/${catalogProductId}`, {
+    variant_ids: variantIds,
+    format: "jpg",
+    files: [{ placement: "front", image_url: designUrl, position }],
+    option_groups: optionGroups,
+  })
+  const taskKey = task.task_key || task.taskKey
+  if (!taskKey) {
+    log(`Mockup task missing task_key: ${JSON.stringify(task).slice(0, 200)}`)
+    return shots
+  }
+  log(`Mockup task_key=${taskKey} — polling…`)
+  for (let i = 0; i < 45; i++) {
+    await sleep(3000)
+    const status = await client.get<any>(
+      `/mockup-generator/task?task_key=${encodeURIComponent(taskKey)}`
+    )
+    const st = status.status || status.task_status
+    log(`Mockup poll ${i + 1}: ${st}`)
+    if (st === "pending" || st === "processing") continue
+    if (st === "completed") {
+      for (const m of status.mockups || []) {
+        const title = m.option || m.title || m.placement || ""
+        const url = m.mockup_url || m.url
+        if (url) {
+          shots.push({
+            url,
+            kind: classifyMockup(title, m.placement),
+            gender: classifyGender(title),
+            title,
+          })
+        }
+        if (Array.isArray(m.extra)) {
+          for (const ex of m.extra) {
+            const u = ex.url || ex.mockup_url
+            const t = ex.title || ex.option || title
+            if (u) {
+              shots.push({
+                url: u,
+                kind: classifyMockup(t),
+                gender: classifyGender(t),
+                title: t,
+              })
+            }
+          }
+        }
+      }
+    } else {
+      log(`Mockup generation ended: ${st}`)
+    }
+    break
+  }
+  return shots
+}
+
+/** Generate male + female lifestyle mockups; return curated 7-image gallery. */
+export async function generateLifestyleMockups(opts: {
+  client: PrintfulApiClient
+  catalogProductId: number
+  variantIds: number[]
+  designUrl: string
+  optionGroups?: string[]
+  log: (m: string) => void
+}): Promise<{ shots: MockupShot[]; gallery: string[] }> {
+  const { client, catalogProductId, variantIds, designUrl, log } = opts
+  let position: Record<string, number> = {
+    area_width: 1800,
+    area_height: 2400,
+    width: 1800,
+    height: 1800,
+    top: 300,
+    left: 0,
+  }
+  let available: string[] = []
+  try {
+    const printfiles = await client.get<any>(
+      `/mockup-generator/printfiles/${catalogProductId}`
+    )
+    available = printfiles.option_groups || []
+    log(
+      `Lifestyle groups: ${available.filter((g) => /lifestyle|men|women/i.test(g)).join(", ")}`
+    )
+    const pfs: any[] = printfiles.printfiles || []
+    const front =
+      pfs.find((p) => String(p.type || "").includes("front") || p.placement === "front") || pfs[0]
+    if (front?.width && front?.height) {
+      const areaW = Number(front.width)
+      const areaH = Number(front.height)
+      const h = Math.round(areaH * 0.8)
+      position = {
+        area_width: areaW,
+        area_height: areaH,
+        width: areaW,
+        height: h,
+        top: Math.round((areaH - h) / 2),
+        left: 0,
+      }
+    }
+  } catch (e: any) {
+    log(`printfiles load failed: ${e.message}`)
+  }
+
+  const pick = (cands: string[]) =>
+    (opts.optionGroups?.length ? opts.optionGroups : cands).filter(
+      (g) => !available.length || available.includes(g)
+    )
+
+  const maleGroups = pick([
+    "Men's Lifestyle",
+    "Men's Lifestyle 2",
+    "Men's Lifestyle 3",
+    "Men's",
+  ])
+  const femaleGroups = pick([
+    "Women's Lifestyle",
+    "Women's Lifestyle 2",
+    "Women's Lifestyle 3",
+  ])
+  const vids = variantIds.slice(0, 2)
+  let shots: MockupShot[] = []
+
+  try {
+    if (maleGroups.length) {
+      shots = shots.concat(
+        await runMockupTask(
+          client,
+          catalogProductId,
+          vids,
+          designUrl,
+          position,
+          maleGroups.slice(0, 3),
+          log
+        )
+      )
+    }
+  } catch (e: any) {
+    log(`Male mockup task failed: ${e.message}`)
+  }
+  try {
+    if (femaleGroups.length) {
+      shots = shots.concat(
+        await runMockupTask(
+          client,
+          catalogProductId,
+          vids,
+          designUrl,
+          position,
+          femaleGroups.slice(0, 3),
+          log
+        )
+      )
+    }
+  } catch (e: any) {
+    log(`Female mockup task failed: ${e.message}`)
+  }
+
+  const seen = new Set<string>()
+  shots = shots.filter((s) => {
+    if (seen.has(s.url)) return false
+    seen.add(s.url)
+    return true
+  })
+  log(
+    `Raw mockups: ${shots.length} (♂${shots.filter((s) => s.gender === "male").length} ♀${shots.filter((s) => s.gender === "female").length})`
+  )
+
+  const permanized: MockupShot[] = []
+  for (const s of shots) {
+    permanized.push({ ...s, url: await permanizeMockupUrl(client, s.url, log) })
+  }
+  const gallery = buildLifestyleGallery(permanized)
+  log(`Gallery ready (${gallery.length} images)`)
+  return { shots: permanized, gallery }
 }
 
 /** Exact color match (case-insensitive), with light aliases */
@@ -130,13 +380,20 @@ function collectPreviewUrls(syncVariants: any[]): string[] {
 }
 
 /**
- * Import an existing Printful sync product into Medusa (no redesign).
- * Use after a partial failure where Printful succeeded but Medusa did not.
+ * Import an existing Printful sync product into Medusa.
+ * When regenerateMockups=true, generates ♂/♀ lifestyle shots and updates images
+ * on an existing Medusa product (matched by printful_product_id metadata) or creates one.
  */
 export async function importPrintfulProductToMedusa(
   printfulProductId: number,
   container: MedusaContainer,
-  opts?: { phrase?: string; category?: string; description?: string }
+  opts?: {
+    phrase?: string
+    category?: string
+    description?: string
+    regenerateMockups?: boolean
+    catalogProductId?: number
+  }
 ): Promise<CreateFromDesignResult> {
   const logs: string[] = []
   const log = (m: string) => {
@@ -168,29 +425,137 @@ export async function importPrintfulProductToMedusa(
     (lower.includes("hoodie") || lower.includes("sweat") ? "hoodies" : "tees")
 
   const previewUrls = collectPreviewUrls(syncVariants)
-  const thumbnailUrl =
-    previewUrls[0] ||
-    syncProduct.thumbnail_url ||
-    syncVariants[0]?.files?.find((f: any) => f.type === "preview")?.preview_url
+  let mockups: MockupShot[] = []
+  let gallery: string[] = []
 
-  const images = [thumbnailUrl, ...previewUrls].filter(
-    (u, i, arr) => u && arr.indexOf(u) === i && !String(u).includes("/floof/design-files/")
+  // Design file for mockup generation: prefer the print file on first variant
+  const designFile = (syncVariants[0]?.files || []).find(
+    (f: any) => f.type === "default" || f.type === "front"
   )
+  const designUrl =
+    designFile?.url ||
+    designFile?.preview_url ||
+    syncProduct.thumbnail_url ||
+    previewUrls[0]
 
-  const medusa = await createMedusaProduct(container, {
-    title,
-    description:
-      opts?.description ||
-      `${title} — printed on demand by Floof × Printful. Soft blanks, sharp wit.`,
-    phrase,
-    category,
-    thumbnailUrl: images[0] || thumbnailUrl,
-    images: images.length ? images : thumbnailUrl ? [thumbnailUrl] : [],
-    syncVariants,
-    retailPrice: syncVariants[0]?.retail_price || "28.00",
-    printfulProductId,
-    log,
-  })
+  const catalogProductId =
+    opts?.catalogProductId ||
+    syncVariants[0]?.product?.product_id ||
+    (category === "hoodies" ? 146 : 71)
+
+  if (opts?.regenerateMockups && designUrl) {
+    try {
+      const variantIds = syncVariants
+        .map((v: any) => v.variant_id)
+        .filter(Boolean)
+        .slice(0, 4)
+      const result = await generateLifestyleMockups({
+        client,
+        catalogProductId: Number(catalogProductId),
+        variantIds,
+        designUrl,
+        log,
+      })
+      mockups = result.shots
+      gallery = result.gallery
+    } catch (e: any) {
+      log(`Regenerate mockups failed: ${e.message}`)
+    }
+  }
+
+  if (!gallery.length) {
+    gallery = buildLifestyleGallery(mockups, previewUrls)
+  }
+  if (!gallery.length) {
+    gallery = previewUrls.slice(0, 7)
+  }
+
+  const thumbnailUrl = gallery[0] || previewUrls[0] || syncProduct.thumbnail_url
+  const images = gallery.length ? gallery : thumbnailUrl ? [thumbnailUrl] : []
+
+  // Prefer updating existing Medusa product with same printful_product_id / handle
+  const productModule = container.resolve(Modules.PRODUCT)
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+
+  let existingProduct: { id: string; handle: string; title: string } | null = null
+  try {
+    const { data: prods } = await query.graph({
+      entity: "product",
+      fields: ["id", "handle", "title", "metadata"],
+      filters: {},
+      pagination: { take: 200 },
+    })
+    const match = (prods || []).find((p: any) => {
+      const mid = p.metadata?.printful_product_id
+      return (
+        mid == printfulProductId ||
+        mid === String(printfulProductId) ||
+        p.handle === slugify(title)
+      )
+    })
+    if (match) {
+      existingProduct = { id: match.id, handle: match.handle, title: match.title }
+    }
+  } catch {
+    const byHandle = await productModule.listProducts(
+      { handle: slugify(title) },
+      { take: 1 }
+    )
+    if (byHandle[0]) {
+      existingProduct = {
+        id: byHandle[0].id,
+        handle: byHandle[0].handle,
+        title: byHandle[0].title,
+      }
+    }
+  }
+
+  let medusa: CreateFromDesignResult["medusa"] = null
+
+  if (existingProduct && images.length) {
+    log(
+      `Updating Medusa product ${existingProduct.id} (${existingProduct.handle}) with ${images.length} gallery images`
+    )
+    try {
+      await updateProductsWorkflow(container).run({
+        input: {
+          products: [
+            {
+              id: existingProduct.id,
+              thumbnail: images[0],
+              images: images.map((url) => ({ url })),
+            },
+          ],
+        } as any,
+      })
+      medusa = {
+        productId: existingProduct.id,
+        handle: existingProduct.handle,
+        title: existingProduct.title,
+      }
+      log(`Updated images on ${existingProduct.handle}`)
+    } catch (e: any) {
+      log(`updateProductsWorkflow failed (${e.message}) — creating new product instead`)
+      existingProduct = null
+    }
+  }
+
+  if (!medusa) {
+    medusa = await createMedusaProduct(container, {
+      title,
+      description:
+        opts?.description ||
+        `${title} — printed on demand by Floof × Printful. Soft blanks, sharp wit.`,
+      phrase,
+      category,
+      thumbnailUrl: images[0] || thumbnailUrl,
+      images: images.length ? images : thumbnailUrl ? [thumbnailUrl] : [],
+      syncVariants,
+      retailPrice: syncVariants[0]?.retail_price || "28.00",
+      printfulProductId,
+      log,
+    })
+  }
 
   return {
     printful: {
@@ -199,7 +564,8 @@ export async function importPrintfulProductToMedusa(
       thumbnailUrl: images[0] || thumbnailUrl,
       variantCount: syncVariants.length,
     },
-    mockups: previewUrls.map((url) => ({ url, kind: "product" as const })),
+    mockups,
+    gallery: images,
     medusa,
     logs,
   }
@@ -351,170 +717,42 @@ export async function createProductFromDesign(
   }
   log(`Printful sync product id=${syncProductId} variants=${syncVariants.length}`)
 
-  // ── 4. Mockups (product + lifestyle) ─────────────────────────
-  const mockups: CreateFromDesignResult["mockups"] = []
+  // ── 4. Lifestyle mockups (♂ + ♀) ─────────────────────────────
+  let mockups: MockupShot[] = []
+  let gallery: string[] = []
+  const previewUrls = collectPreviewUrls(syncVariants)
+
+  // Prefer a design URL Printful can re-fetch: file CDN or original
+  const designForMockups =
+    (fileUrl && !fileUrl.includes("/floof/design-files/") ? fileUrl : null) ||
+    input.designUrl
 
   if (generateMockups) {
     try {
-      const variantIds = variants.slice(0, 4).map((v) => v.id)
-      let optionGroups =
-        input.mockupOptionGroups || (["Flat", "Men's", "Women's Lifestyle"] as string[])
-      let position: Record<string, number> | undefined
-
-      try {
-        const printfiles = await client.get<any>(
-          `/mockup-generator/printfiles/${catalogProductId}`
-        )
-        const available: string[] = printfiles.option_groups || []
-        if (available.length) {
-          log(`Mockup option groups available: ${available.slice(0, 12).join(", ")}…`)
-          const preferred = [
-            "Flat",
-            "Ghost",
-            "On Hanger",
-            "Men's",
-            "Men's Lifestyle",
-            "Women's Lifestyle",
-          ].filter((g) => available.includes(g))
-          if (preferred.length) optionGroups = preferred.slice(0, 4)
-          else optionGroups = available.slice(0, 3)
-        }
-
-        // Build position from first front printfile so MG-4 is satisfied
-        const pfs: any[] = printfiles.printfiles || []
-        const front =
-          pfs.find((p) => String(p.type || "").includes("front") || p.placement === "front") ||
-          pfs[0]
-        if (front?.width && front?.height) {
-          const areaW = Number(front.width)
-          const areaH = Number(front.height)
-          // Center a full-width design, ~80% height
-          const w = areaW
-          const h = Math.round(areaH * 0.8)
-          position = {
-            area_width: areaW,
-            area_height: areaH,
-            width: w,
-            height: h,
-            top: Math.round((areaH - h) / 2),
-            left: 0,
-          }
-          log(`Mockup position from printfile: ${JSON.stringify(position)}`)
-        }
-      } catch (e: any) {
-        log(`Could not load printfiles (using defaults): ${e.message}`)
-      }
-
-      // Safe fallback position (Bella 3001-ish print area)
-      if (!position) {
-        position = {
-          area_width: 1800,
-          area_height: 2400,
-          width: 1800,
-          height: 1800,
-          top: 300,
-          left: 0,
-        }
-        log(`Using fallback mockup position`)
-      }
-
-      log(`Starting mockup task option_groups=[${optionGroups.join(", ")}]`)
-      const task = await client.post<any>(
-        `/mockup-generator/create-task/${catalogProductId}`,
-        {
-          variant_ids: variantIds,
-          format: "jpg",
-          files: [
-            {
-              placement: "front",
-              image_url: input.designUrl,
-              position,
-            },
-          ],
-          option_groups: optionGroups,
-        }
-      )
-
-      const taskKey = task.task_key || task.taskKey
-      if (!taskKey) {
-        log(`Mockup task missing task_key: ${JSON.stringify(task).slice(0, 200)}`)
-      } else {
-        log(`Mockup task_key=${taskKey} — polling…`)
-        let done = false
-        for (let i = 0; i < 40; i++) {
-          await sleep(3000)
-          const status = await client.get<any>(
-            `/mockup-generator/task?task_key=${encodeURIComponent(taskKey)}`
-          )
-          const st = status.status || status.task_status
-          log(`Mockup poll ${i + 1}: ${st}`)
-          if (st === "completed" || st === "failed" || st === "error") {
-            if (st === "completed") {
-              const list: any[] = status.mockups || []
-              for (const m of list) {
-                const url = m.mockup_url || m.url
-                if (url) {
-                  mockups.push({
-                    url,
-                    kind: classifyMockup(m.option || m.title, m.placement),
-                    title: m.option || m.title || m.placement,
-                  })
-                }
-                if (Array.isArray(m.extra)) {
-                  for (const ex of m.extra) {
-                    const u = ex.url || ex.mockup_url
-                    if (u) {
-                      mockups.push({
-                        url: u,
-                        kind: classifyMockup(ex.title, ex.option),
-                        title: ex.title || ex.option,
-                      })
-                    }
-                  }
-                }
-              }
-              const seen = new Set<string>()
-              for (let i = mockups.length - 1; i >= 0; i--) {
-                if (seen.has(mockups[i].url)) mockups.splice(i, 1)
-                else seen.add(mockups[i].url)
-              }
-              log(`Collected ${mockups.length} mockup image(s)`)
-            } else {
-              log(`Mockup generation failed: ${JSON.stringify(status).slice(0, 300)}`)
-            }
-            done = true
-            break
-          }
-        }
-        if (!done) log("Mockup task timed out — continuing with Printful previews")
-      }
+      const result = await generateLifestyleMockups({
+        client,
+        catalogProductId,
+        variantIds: variants.map((v) => v.id),
+        designUrl: designForMockups,
+        optionGroups: input.mockupOptionGroups,
+        log,
+      })
+      mockups = result.shots
+      gallery = result.gallery
     } catch (e: any) {
       log(`Mockup generation skipped/failed: ${e.message}`)
     }
   }
 
-  mockups.sort((a, b) => {
-    const rank = (k: string) => (k === "product" ? 0 : k === "lifestyle" ? 1 : 2)
-    return rank(a.kind) - rank(b.kind)
-  })
+  if (!gallery.length) {
+    gallery = buildLifestyleGallery(mockups, previewUrls)
+  }
+  if (!gallery.length && previewUrls[0]) gallery = previewUrls.slice(0, 7)
 
-  // Prefer durable Printful CDN URLs (not our temporary staging URL)
-  const previewUrls = collectPreviewUrls(syncVariants)
-  const thumbnailUrl =
-    mockups.find((m) => m.kind === "product")?.url ||
-    mockups[0]?.url ||
-    previewUrls[0] ||
-    syncProduct.thumbnail_url ||
-    fileUrl
-
-  const images = [
-    thumbnailUrl,
-    ...mockups.map((m) => m.url),
-    ...previewUrls,
-  ].filter((u, i, arr) => u && arr.indexOf(u) === i && !u.includes("/floof/design-files/"))
-
-  // If everything was staging-only, keep thumbnail as last resort
-  if (!images.length && thumbnailUrl) images.push(thumbnailUrl)
+  const thumbnailUrl = gallery[0] || syncProduct.thumbnail_url || fileUrl
+  const images = gallery.length
+    ? gallery
+    : [thumbnailUrl].filter(Boolean)
 
   // ── 5. Medusa product ────────────────────────────────────────
   let medusa: CreateFromDesignResult["medusa"] = null
@@ -551,6 +789,7 @@ export async function createProductFromDesign(
       variantCount: syncVariants.length,
     },
     mockups,
+    gallery: images,
     medusa,
     logs,
   }

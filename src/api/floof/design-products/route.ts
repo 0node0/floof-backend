@@ -54,7 +54,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
   const body = (req.body || {}) as Record<string, any>
 
-  // Resume: import an existing Printful product that was created but never landed in Medusa
+  // Resume / refresh: import Printful product, optionally regenerate lifestyle mockups
   if (body.importPrintfulProductId) {
     try {
       const result = await importPrintfulProductToMedusa(
@@ -64,6 +64,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           phrase: body.phrase,
           category: body.category,
           description: body.description,
+          regenerateMockups:
+            body.regenerateMockups === true || body.regenerateMockups === "true",
+          catalogProductId: body.catalogProductId
+            ? Number(body.catalogProductId)
+            : undefined,
         }
       )
       res.status(201).json({
@@ -71,6 +76,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         imported: true,
         printful: result.printful,
         mockups: result.mockups,
+        gallery: result.gallery,
         medusa: result.medusa,
         storeUrl: result.medusa
           ? `https://www.floof.space/products/${result.medusa.handle}`
@@ -159,6 +165,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       designUrlUsed: designUrl,
       printful: result.printful,
       mockups: result.mockups,
+      gallery: result.gallery,
       medusa: result.medusa,
       storeUrl: result.medusa
         ? `https://www.floof.space/products/${result.medusa.handle}`
