@@ -44,6 +44,7 @@ async function storeRateLimit(
 /**
  * Medusa middleware config:
  *  - Preserve raw body for Stripe signature verification
+ *  - Allow large JSON for design base64 uploads (Studio)
  *  - Rate-limit /store/* at 60 req/min per IP
  */
 export default defineMiddlewares({
@@ -52,6 +53,12 @@ export default defineMiddlewares({
       method: ["POST"],
       matcher: "/webhooks/stripe",
       bodyParser: { preserveRawBody: true },
+    },
+    {
+      // Studio posts designBase64 PNGs — default ~100kb limit is far too small
+      method: ["POST"],
+      matcher: "/floof/design-products",
+      bodyParser: { sizeLimit: "20mb" },
     },
     {
       matcher: "/store/*",

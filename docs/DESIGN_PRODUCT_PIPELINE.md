@@ -126,6 +126,7 @@ Token scopes needed: `sync_products`, `file_library`, and mockup generator acces
 
 ## Notes
 
+- Body limit for Studio uploads is **20mb** JSON (`bodyParser.sizeLimit` on `/floof/design-products`). If you still see `request entity too large`, compress the PNG or host it and use `designUrl` instead.
 - Printful **cannot** read local disk paths — URL or Studio upload only.
 - Mockup generation is async and can take 30–90s; the API waits and polls.
 - If mockups fail, the product still creates using the design file / thumbnail.
