@@ -154,6 +154,46 @@ PRINTFUL_AUTO_CONFIRM=true   # false = Printful orders stay draft for manual rev
 
 Token scopes needed: `sync_products`, `file_library`, and mockup generator access (default private token usually has these).
 
+## Mug mockups & titles
+
+Mockup placement and `option_groups` come from Printful `GET /mockup-generator/printfiles/{catalogProductId}`:
+
+- Apparel uses placement **`front`** and Men's / Women's **Lifestyle** groups (1–4 when available).
+- Mugs and similar products use placement **`default`** and neutral **Lifestyle** groups (e.g. Lifestyle, Lifestyle 2, …).
+
+New products use the design **name as-is** (no `FLOOF —` prefix).
+
+### Regenerate mug mockups / strip legacy titles
+
+**CLI** (from `floof-backend` with DB + Printful env):
+
+```bash
+yarn regenerate:mug-mockups
+```
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `DRY_RUN=1` | off | Log actions only |
+| `STRIP_FLOOF_PREFIX=0` | strip | Skip title cleanup |
+| `REGENERATE_MOCKUPS=0` | regenerate | Skip Printful mockup regen |
+| `PRODUCT_IDS` | all mugs | Comma-separated Medusa product ids |
+| `MUG_CATALOG_PRODUCT_IDS` | `19,483` | Extra catalog ids for mug detection |
+
+**Admin API:**
+
+```http
+POST /floof/design-products
+x-floof-admin-key: YOUR_KEY
+Content-Type: application/json
+
+{
+  "maintenance": "regenerateMugMockups",
+  "regenerateMockups": true,
+  "stripFloofPrefix": true,
+  "dryRun": false
+}
+```
+
 ## Notes
 
 - Body limit for Studio uploads is **20mb** JSON (`bodyParser.sizeLimit` on `/floof/design-products`). If you still see `request entity too large`, compress the PNG or host it and use `designUrl` instead.

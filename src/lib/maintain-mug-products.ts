@@ -1,0 +1,163 @@
+import type { MedusaContainer } from "@medusajs/framework/types"
+import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
+import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
+import { importPrintfulProductToMedusa } from "./product-from-design"
+import { stripFloofProductTitle } from "./printful-mockup-config"
+
+export type MaintainMugProductsInput = {
+  /** Regenerate Printful lifestyle mockups and refresh Medusa gallery images */
+  regenerateMockups?: boolean
+  /** Strip legacy "FLOOF —" from Medusa product titles */
+  stripFloofPrefix?: boolean
+  /** Limit to these Medusa product ids */
+  productIds?: string[]
+  /** Dry run — log actions only */
+  dryRun?: boolean
+}
+
+export type MaintainMugProductsResult = {
+  scanned: number
+  matched: number
+  titlesUpdated: number
+  mockupsRegenerated: number
+  errors: Array<{ productId: string; error: string }>
+  logs: string[]
+}
+
+function mugCatalogIdsFromEnv(): Set<string> {
+  const raw =
+    process.env.MUG_CATALOG_PRODUCT_IDS ||
+    process.env.MUG_CATALOG_PRODUCT_ID ||
+    "19,483"
+  return new Set(
+    raw
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean)
+  )
+}
+
+function looksLikeMug(product: {
+  title?: string
+  handle?: string
+  description?: string
+  metadata?: Record<string, unknown>
+}): boolean {
+  const blob = `${product.title || ""} ${product.handle || ""} ${product.description || ""} ${
+    product.metadata?.phrase || ""
+  }`.toLowerCase()
+  if (blob.includes("mug")) return true
+  const cat = String(product.metadata?.category || "").toLowerCase()
+  if (cat === "accessories" && blob.includes("drink")) return true
+  const catalogId = product.metadata?.printful_catalog_product_id
+  if (catalogId != null && mugCatalogIdsFromEnv().has(String(catalogId))) return true
+  return false
+}
+
+/**
+ * Regenerate mockups for existing mug products and/or strip FLOOF title prefixes.
+ */
+export async function maintainMugDesignProducts(
+  container: MedusaContainer,
+  input: MaintainMugProductsInput = {}
+): Promise<MaintainMugProductsResult> {
+  const logs: string[] = []
+  const log = (m: string) => {
+    logs.push(m)
+    console.log(`[maintain-mug-products] ${m}`)
+  }
+
+  const query = container.resolve(ContainerRegistrationKeys.QUERY)
+  const { data: products } = await query.graph({
+    entity: "product",
+    fields: ["id", "title", "handle", "description", "metadata"],
+  })
+
+  const all = (products || []) as Array<{
+    id: string
+    title: string
+    handle: string
+    description?: string
+    metadata?: Record<string, unknown>
+  }>
+
+  let matched = all.filter((p) => {
+    if (input.productIds?.length && !input.productIds.includes(p.id)) return false
+    return looksLikeMug(p)
+  })
+
+  if (!input.productIds?.length) {
+    matched = matched.filter((p) => p.metadata?.printful_product_id != null)
+  }
+
+  log(
+    `Scanned ${all.length} products; ${matched.length} mug candidate(s)${
+      input.dryRun ? " (dry run)" : ""
+    }`
+  )
+
+  const errors: MaintainMugProductsResult["errors"] = []
+  let titlesUpdated = 0
+  let mockupsRegenerated = 0
+
+  for (const product of matched) {
+    const printfulId = Number(product.metadata?.printful_product_id)
+    const cleanedTitle = stripFloofProductTitle(product.title)
+
+    if (input.stripFloofPrefix && cleanedTitle !== product.title) {
+      log(`Title: "${product.title}" → "${cleanedTitle}" (${product.handle})`)
+      if (!input.dryRun) {
+        try {
+          await updateProductsWorkflow(container).run({
+            input: {
+              products: [{ id: product.id, title: cleanedTitle }],
+            } as any,
+          })
+          titlesUpdated++
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e)
+          errors.push({ productId: product.id, error: `title update: ${msg}` })
+        }
+      } else {
+        titlesUpdated++
+      }
+    }
+
+    if (input.regenerateMockups && printfulId) {
+      log(`Regenerating mockups for Printful #${printfulId} (${product.handle})`)
+      if (!input.dryRun) {
+        try {
+          await importPrintfulProductToMedusa(printfulId, container, {
+            regenerateMockups: true,
+            catalogProductId: product.metadata?.printful_catalog_product_id
+              ? Number(product.metadata.printful_catalog_product_id)
+              : undefined,
+            category:
+              typeof product.metadata?.category === "string"
+                ? product.metadata.category
+                : "accessories",
+            phrase:
+              typeof product.metadata?.phrase === "string"
+                ? product.metadata.phrase
+                : undefined,
+          })
+          mockupsRegenerated++
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e)
+          errors.push({ productId: product.id, error: `mockups: ${msg}` })
+        }
+      } else {
+        mockupsRegenerated++
+      }
+    }
+  }
+
+  return {
+    scanned: all.length,
+    matched: matched.length,
+    titlesUpdated,
+    mockupsRegenerated,
+    errors,
+    logs,
+  }
+}

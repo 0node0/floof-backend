@@ -7,6 +7,7 @@ import {
 } from "../../../lib/product-from-design"
 import { publicDesignUrl, stageDesignFile } from "../../../lib/design-staging"
 import { setFloofCors } from "../../../lib/cors"
+import { maintainMugDesignProducts } from "../../../lib/maintain-mug-products"
 
 function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
   const expected = process.env.FLOOF_ADMIN_KEY || ""
@@ -48,6 +49,26 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   if (!requireAdmin(req, res)) return
 
   const body = (req.body || {}) as Record<string, any>
+
+  if (body.maintenance === "regenerateMugMockups") {
+    try {
+      const result = await maintainMugDesignProducts(req.scope, {
+        regenerateMockups:
+          body.regenerateMockups !== false && body.regenerateMockups !== "false",
+        stripFloofPrefix:
+          body.stripFloofPrefix !== false && body.stripFloofPrefix !== "false",
+        dryRun: body.dryRun === true || body.dryRun === "true",
+        productIds: Array.isArray(body.productIds)
+          ? body.productIds.map(String)
+          : undefined,
+      })
+      res.status(200).json({ ok: true, maintenance: true, ...result })
+    } catch (e: any) {
+      console.error("[floof/design-products maintenance]", e)
+      res.status(500).json({ error: e.message || "Maintenance failed" })
+    }
+    return
+  }
 
   // Resume / refresh: import Printful product, optionally regenerate lifestyle mockups
   if (body.importPrintfulProductId) {
@@ -194,6 +215,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       generateMockups: true,
       style: "retro",
       draft: false,
+    },
+    maintenance: {
+      maintenance: "regenerateMugMockups",
+      regenerateMockups: true,
+      stripFloofPrefix: true,
+      dryRun: false,
+      productIds: ["optional-medusa-product-id"],
     },
   })
 }
