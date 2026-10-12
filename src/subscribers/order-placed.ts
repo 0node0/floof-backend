@@ -1,6 +1,7 @@
 import type { SubscriberArgs, SubscriberConfig } from "@medusajs/medusa"
 import type { IEventBusModuleService } from "@medusajs/framework/types"
 import { Modules } from "@medusajs/framework/utils"
+import { printfulAutoConfirm } from "../lib/checkout-config"
 
 /**
  * order.placed → submit the order to Printful for production.
@@ -124,11 +125,21 @@ export default async function orderPlacedHandler({
     const draft = await printful.createOrder(payload)
     logger.info(`[order-placed] Printful draft created: ${draft?.id}`)
 
-    const confirmed = await printful.confirmOrder(draft.id)
-    const printfulOrderId = confirmed?.id || draft?.id
-    logger.info(
-      `[order-placed] Printful order confirmed: ${printfulOrderId} status=${confirmed?.status}`
-    )
+    let printfulOrderId = draft?.id
+    let printfulStatus = draft?.status || "draft"
+
+    if (printfulAutoConfirm()) {
+      const confirmed = await printful.confirmOrder(draft.id)
+      printfulOrderId = confirmed?.id || draft?.id
+      printfulStatus = confirmed?.status || printfulStatus
+      logger.info(
+        `[order-placed] Printful order confirmed: ${printfulOrderId} status=${printfulStatus}`
+      )
+    } else {
+      logger.info(
+        `[order-placed] PRINTFUL_AUTO_CONFIRM=false — leaving Printful order ${printfulOrderId} as draft for manual review`
+      )
+    }
 
     // Persist Printful id for idempotency + shipment mapping
     try {
@@ -138,6 +149,8 @@ export default async function orderPlacedHandler({
           ...(order.metadata || {}),
           printful_order_id: printfulOrderId,
           printful_external_id: `floof_${order.display_id}`,
+          printful_status: printfulStatus,
+          printful_auto_confirmed: printfulAutoConfirm(),
         },
       })
     } catch (err: any) {

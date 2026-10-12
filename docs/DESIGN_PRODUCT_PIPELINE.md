@@ -10,8 +10,9 @@ PNG (URL or Studio upload)
     → Printful File Library
     → Printful Sync Product (front print on selected blanks)
     → Printful Mockup Generator (flat/product + model/lifestyle)
-    → Medusa published product (images + PF-{sync_variant_id} SKUs)
-    → live on https://www.floof.space/products/{handle}
+    → Medusa product (images + PF-{sync_variant_id} SKUs)
+    → optional style collection (handle e.g. `retro`)
+    → live on https://www.floof.space/products/{handle} (or draft until published)
 ```
 
 ## Defaults
@@ -57,9 +58,37 @@ Content-Type: application/json
   "colors": ["Black", "White"],
   "sizes": ["S", "M", "L", "XL", "2XL"],
   "retailPrice": "28.00",
-  "generateMockups": true
+  "generateMockups": true,
+  "style": "retro",
+  "draft": false
 }
 ```
+
+- **`style`** (optional): Medusa product collection handle (`retro`, `minimal`, …). Collection is created if missing; product is linked after create.
+- **`draft`**: When `true`, Medusa product `status` is `draft` (not on storefront until published in Admin).
+
+### Style collection landing metadata
+
+```http
+POST /floof/style-collections
+x-floof-admin-key: YOUR_KEY
+Content-Type: application/json
+```
+
+```json
+{
+  "handle": "retro",
+  "title": "Retro",
+  "tagline": "Vintage vibes",
+  "description": "Curated retro tees",
+  "heroCopy": "Throwback graphics for modern closets",
+  "accentColors": ["#E8A87C", "#1A1A2E"],
+  "seoTitle": "Retro Tees | Floof",
+  "seoDescription": "Shop retro print-on-demand tees at Floof."
+}
+```
+
+Metadata is stored on `product_collection.metadata` (including a `landing` object for storefront use).
 
 **Browser upload (base64):**
 
@@ -119,7 +148,8 @@ Storefront page: **https://www.floof.space/studio**
 PRINTFUL_API_TOKEN=…
 PRINTFUL_STORE_ID=…          # if using multi-store / OAuth token
 FLOOF_ADMIN_KEY=…            # openssl rand -hex 32
-MEDUSA_BACKEND_URL=https://floof-backend-production-….up.railway.app
+MEDUSA_BACKEND_URL=https://api.floof.space
+PRINTFUL_AUTO_CONFIRM=true   # false = Printful orders stay draft for manual review
 ```
 
 Token scopes needed: `sync_products`, `file_library`, and mockup generator access (default private token usually has these).

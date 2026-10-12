@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { createOrderWorkflow } from "@medusajs/medusa/core-flows"
 import type Stripe from "stripe"
+import { shippingAmountFromStripeSession } from "./checkout-shipping"
 
 /**
  * After Stripe Checkout Session completes, create a Medusa order from the cart
@@ -117,8 +118,26 @@ export async function fulfillCheckoutSession(
     },
   }))
 
+  const { shippingCents, taxCents } = shippingAmountFromStripeSession(session)
+  const shippingLabel =
+    session.metadata?.shipping_display_name ||
+    (shippingCents === 0 ? "Free shipping" : "Standard shipping")
+
+  const shippingMethods =
+    shippingCents > 0 || session.metadata?.shipping_source === "free"
+      ? [
+          {
+            name: shippingLabel,
+            amount: shippingCents,
+            data: {
+              source: session.metadata?.shipping_source || "stripe",
+            },
+          },
+        ]
+      : undefined
+
   logger.info(
-    `[checkout-complete] Creating order for cart ${cartId} session ${session.id} (${items.length} items)`
+    `[checkout-complete] Creating order for cart ${cartId} session ${session.id} (${items.length} items) shipping=${shippingCents} tax=${taxCents}`
   )
 
   const { result: order } = await createOrderWorkflow(container).run({
@@ -130,6 +149,7 @@ export async function fulfillCheckoutSession(
       currency_code: (cart.currency_code || "usd").toLowerCase(),
       status: "pending",
       items,
+      shipping_methods: shippingMethods,
       shipping_address: shipping || undefined,
       billing_address: shipping || undefined,
       metadata: {
@@ -141,6 +161,12 @@ export async function fulfillCheckoutSession(
             : session.payment_intent?.id || null,
         stripe_payment_status: session.payment_status,
         payment_status: "captured",
+        stripe_amount_subtotal: session.amount_subtotal ?? null,
+        stripe_amount_total: session.amount_total ?? null,
+        stripe_shipping_cents: shippingCents,
+        stripe_tax_cents: taxCents,
+        shipping_source: session.metadata?.shipping_source || null,
+        shipping_display_name: shippingLabel,
       },
     },
   })

@@ -6,12 +6,7 @@ import {
   type GarmentKind,
 } from "../../../lib/product-from-design"
 import { publicDesignUrl, stageDesignFile } from "../../../lib/design-staging"
-
-function setCors(res: MedusaResponse) {
-  res.setHeader("Access-Control-Allow-Origin", "*")
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, x-floof-admin-key, Authorization")
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-}
+import { setFloofCors } from "../../../lib/cors"
 
 function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
   const expected = process.env.FLOOF_ADMIN_KEY || ""
@@ -43,13 +38,13 @@ function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
  *   { name, designBase64: "data:image/png;base64,…" | raw base64, filename? }
  *   Stages file and builds a temporary public URL for Printful.
  */
-export async function OPTIONS(_req: MedusaRequest, res: MedusaResponse) {
-  setCors(res)
+export async function OPTIONS(req: MedusaRequest, res: MedusaResponse) {
+  setFloofCors(req, res)
   res.status(204).end()
 }
 
 export async function POST(req: MedusaRequest, res: MedusaResponse) {
-  setCors(res)
+  setFloofCors(req, res)
   if (!requireAdmin(req, res)) return
 
   const body = (req.body || {}) as Record<string, any>
@@ -156,6 +151,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     generateMockups: body.generateMockups !== false && body.generateMockups !== "false",
     mockupOptionGroups: body.mockupOptionGroups,
     phrase: body.phrase,
+    style: body.style ? String(body.style) : undefined,
+    draft: body.draft === true || body.draft === "true",
   }
 
   try {
@@ -181,7 +178,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 }
 
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
-  setCors(res)
+  setFloofCors(req, res)
   if (!requireAdmin(req, res)) return
   res.json({
     endpoint: "POST /floof/design-products",
@@ -195,6 +192,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       sizes: ["S", "M", "L", "XL", "2XL"],
       retailPrice: "28.00",
       generateMockups: true,
+      style: "retro",
+      draft: false,
     },
   })
 }
