@@ -174,10 +174,12 @@ yarn regenerate:mug-mockups
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `DRY_RUN=1` | off | Log actions only |
-| `STRIP_FLOOF_PREFIX=0` | strip | Skip title cleanup |
-| `REGENERATE_MOCKUPS=0` | regenerate | Skip Printful mockup regen |
-| `PRODUCT_IDS` | all mugs | Comma-separated Medusa product ids |
+| `STRIP_FLOOF_PREFIX=0` | strip on **all** products | Skip title cleanup |
+| `REGENERATE_MOCKUPS=0` | regenerate | Skip Printful mockup regen (mugs only) |
+| `PRODUCT_IDS` | all mugs | Comma-separated Medusa product ids (mockup regen only) |
 | `MUG_CATALOG_PRODUCT_IDS` | `19,483` | Extra catalog ids for mug detection |
+
+Mug mockups use Printful **Lifestyle / Lifestyle 2 / Lifestyle 3** `option_groups` (one task each), placement **`default`**, and layout **templates** to center art on the front of the wrap. The first gallery image is the primary lifestyle shot.
 
 **Admin API:**
 

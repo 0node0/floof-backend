@@ -1,6 +1,6 @@
 /**
  * Printful mockup generator helpers (v1 API).
- * Resolves placement, print area, and option_groups from /mockup-generator/printfiles.
+ * Resolves placement, print area, and option_groups from printfiles + layout templates.
  */
 
 import type PrintfulApiClient from "../modules/printful/client"
@@ -27,17 +27,42 @@ export type PrintfilesApiResult = {
   }>
 }
 
+export type LayoutTemplate = {
+  template_id: number
+  printfile_id?: number
+  template_width?: number
+  template_height?: number
+  print_area_width?: number
+  print_area_height?: number
+  print_area_top?: number
+  print_area_left?: number
+  is_template_on_front?: boolean
+  placement?: string
+}
+
+export type MockupTemplatesResult = {
+  variant_mapping?: Array<{
+    variant_id: number
+    templates?: Array<{ placement: string; template_id: number }>
+  }>
+  templates?: LayoutTemplate[]
+}
+
+export type MockupProductKind = "apparel" | "drinkware" | "other"
+
 export type MockupOptionBatch = {
   optionGroups: string[]
   gender: "male" | "female" | "neutral"
 }
 
 export type ResolvedPrintfulMockupConfig = {
+  productKind: MockupProductKind
   placement: string
   syncFileType: string
   position: Record<string, number>
   batches: MockupOptionBatch[]
   optionGroupsAvailable: string[]
+  optionsAvailable: string[]
 }
 
 const DEFAULT_POSITION: Record<string, number> = {
@@ -64,6 +89,25 @@ export function resolveMockupPlacement(
   return keys[0] || "front"
 }
 
+export function isDrinkwarePlacement(
+  availablePlacements?: Record<string, string> | null
+): boolean {
+  const keys = availablePlacements ? Object.keys(availablePlacements) : []
+  return keys.includes("default") && !keys.includes("front")
+}
+
+export function resolveMockupProductKind(
+  availablePlacements?: Record<string, string> | null,
+  optionGroups?: string[]
+): MockupProductKind {
+  if (isDrinkwarePlacement(availablePlacements)) return "drinkware"
+  if (optionGroups?.some((g) => /men's lifestyle|women's lifestyle/i.test(g))) {
+    return "apparel"
+  }
+  if (availablePlacements?.front) return "apparel"
+  return "other"
+}
+
 /** Sync product file `type` for the primary print placement. */
 export function resolveSyncFileType(placement: string): string {
   if (placement === "front") return "default"
@@ -80,8 +124,7 @@ function printfileIdForPlacement(
     const id = row?.placements?.[placement]
     if (id != null) return id
   }
-  const first = variantPrintfiles?.[0]?.placements?.[placement]
-  return first
+  return variantPrintfiles?.[0]?.placements?.[placement]
 }
 
 function findPrintfileDimensions(
@@ -126,15 +169,84 @@ export function buildCenteredPrintPosition(
   }
 }
 
+/**
+ * Mug/sublimation wrap: center the art on the front panel (middle of the wrap),
+ * not full bleed across the handle — so lifestyle cameras see the design.
+ */
+export function buildDrinkwareFrontFacingPosition(
+  areaW: number,
+  areaH: number,
+  widthRatio = 0.36
+): Record<string, number> {
+  const width = Math.round(areaW * widthRatio)
+  const height = Math.round(Math.min(width, areaH * 0.92))
+  const w = Math.min(width, height)
+  const h = w
+  return {
+    area_width: areaW,
+    area_height: areaH,
+    width: w,
+    height: h,
+    left: Math.round((areaW - w) / 2),
+    top: Math.round((areaH - h) / 2),
+  }
+}
+
+export function findLayoutTemplateForVariant(
+  templatesResult: MockupTemplatesResult | null | undefined,
+  variantId: number,
+  placement: string
+): LayoutTemplate | null {
+  if (!templatesResult?.templates?.length) return null
+  const mapping = templatesResult.variant_mapping?.find((v) => v.variant_id === variantId)
+  const templateId =
+    mapping?.templates?.find((t) => t.placement === placement)?.template_id ??
+    mapping?.templates?.[0]?.template_id
+  if (templateId == null) return null
+  return templatesResult.templates.find((t) => t.template_id === templateId) ?? null
+}
+
+export function buildDrinkwarePositionFromTemplateAndPrintfile(
+  template: LayoutTemplate | null,
+  printfileDims: { width: number; height: number }
+): Record<string, number> {
+  const areaW = printfileDims.width
+  const areaH = printfileDims.height
+
+  if (template?.print_area_width && template.print_area_height) {
+    const scaleX = areaW / (template.print_area_width || areaW)
+    const scaleY = areaH / (template.print_area_height || areaH)
+    const w = Math.round(Math.min(template.print_area_width * scaleX * 0.85, areaW * 0.38))
+    const h = Math.round(Math.min(template.print_area_height * scaleY * 0.85, areaH * 0.92))
+    const size = Math.min(w, h)
+    return {
+      area_width: areaW,
+      area_height: areaH,
+      width: size,
+      height: size,
+      left: Math.round((areaW - size) / 2),
+      top: Math.round((areaH - size) / 2),
+    }
+  }
+
+  return buildDrinkwareFrontFacingPosition(areaW, areaH)
+}
+
 export function buildPrintPositionFromPrintfiles(
   printfiles: PrintfileInfo[],
   variantPrintfiles: PrintfilesApiResult["variant_printfiles"],
   variantIds: number[],
-  placement: string
+  placement: string,
+  productKind: MockupProductKind = "apparel",
+  layoutTemplate?: LayoutTemplate | null
 ): Record<string, number> {
   const printfileId = printfileIdForPlacement(variantPrintfiles, variantIds, placement)
   const dims = findPrintfileDimensions(printfiles, printfileId, placement)
   if (!dims) return { ...DEFAULT_POSITION }
+
+  if (productKind === "drinkware") {
+    return buildDrinkwarePositionFromTemplateAndPrintfile(layoutTemplate ?? null, dims)
+  }
   return buildCenteredPrintPosition(dims.width, dims.height)
 }
 
@@ -142,6 +254,34 @@ function lifestyleRank(name: string): number {
   const m = /^lifestyle\s*(\d+)?$/i.exec(name.trim())
   if (!m) return 50
   return m[1] ? parseInt(m[1], 10) : 1
+}
+
+/** Drinkware lifestyle groups: Lifestyle, Lifestyle 2, Lifestyle 3 (supports "Lifestyle 1" alias). */
+export function resolveDrinkwareLifestyleOptionGroups(available: string[]): string[] {
+  const normalized = new Map<string, string>()
+  for (const g of available) {
+    const t = g.trim()
+    if (/^lifestyle(\s+1)?$/i.test(t)) normalized.set("Lifestyle", t === "Lifestyle 1" ? "Lifestyle" : t)
+    else if (/^lifestyle\s+[2-9]\d*$/i.test(t)) normalized.set(t, t)
+  }
+
+  const ordered = ["Lifestyle", "Lifestyle 2", "Lifestyle 3"]
+  const resolved: string[] = []
+  for (const want of ordered) {
+    const actual = available.find((g) => g.trim().toLowerCase() === want.toLowerCase())
+    if (actual) resolved.push(actual)
+    else if (want === "Lifestyle" && normalized.has("Lifestyle")) {
+      const pick = available.find((g) => /^lifestyle(\s+1)?$/i.test(g.trim()))
+      if (pick) resolved.push(pick)
+    }
+  }
+
+  if (resolved.length) return resolved.slice(0, 3)
+
+  return available
+    .filter((g) => /^lifestyle(\s+\d+)?$/i.test(g.trim()) && !/men|women|flat/i.test(g))
+    .sort((a, b) => lifestyleRank(a) - lifestyleRank(b))
+    .slice(0, 3)
 }
 
 function pickLifestyleGroups(available: string[], max = 4): string[] {
@@ -178,15 +318,22 @@ function hasApparelLifestyleGroups(available: string[]): boolean {
   return available.some((g) => /men's lifestyle|women's lifestyle/i.test(g))
 }
 
+function drinkwareBatches(groups: string[]): MockupOptionBatch[] {
+  return groups.slice(0, 3).map((g) => ({ optionGroups: [g], gender: "neutral" as const }))
+}
+
 /**
- * Choose mockup option_group batches. Prefers Lifestyle 1–4 (or "Lifestyle", "Lifestyle 2", …)
- * for drinkware/posters; uses Men's/Women's lifestyle sets for apparel.
+ * Choose mockup option_group batches. Drinkware uses one Printful task per Lifestyle group.
  */
 export function selectMockupOptionBatches(
   available: string[],
-  overrideGroups?: string[]
+  overrideGroups?: string[],
+  productKind: MockupProductKind = "other"
 ): MockupOptionBatch[] {
   if (overrideGroups?.length) {
+    if (productKind === "drinkware") {
+      return drinkwareBatches(overrideGroups)
+    }
     return [{ optionGroups: overrideGroups, gender: "neutral" }]
   }
 
@@ -194,9 +341,14 @@ export function selectMockupOptionBatches(
     return []
   }
 
+  if (productKind === "drinkware") {
+    const groups = resolveDrinkwareLifestyleOptionGroups(available)
+    if (groups.length) return drinkwareBatches(groups)
+  }
+
   const lifestyleOnly = pickLifestyleGroups(available, 4)
   if (lifestyleOnly.length && !hasApparelLifestyleGroups(available)) {
-    return [{ optionGroups: lifestyleOnly, gender: "neutral" }]
+    return drinkwareBatches(lifestyleOnly)
   }
 
   const batches: MockupOptionBatch[] = []
@@ -206,7 +358,7 @@ export function selectMockupOptionBatches(
   if (female.length) batches.push({ optionGroups: female, gender: "female" })
 
   if (!batches.length && lifestyleOnly.length) {
-    batches.push({ optionGroups: lifestyleOnly, gender: "neutral" })
+    return drinkwareBatches(lifestyleOnly)
   }
 
   return batches
@@ -214,20 +366,61 @@ export function selectMockupOptionBatches(
 
 export function parsePrintfilesResponse(raw: PrintfilesApiResult): ResolvedPrintfulMockupConfig {
   const placement = resolveMockupPlacement(raw.available_placements)
+  const productKind = resolveMockupProductKind(raw.available_placements, raw.option_groups)
   const printfiles = raw.printfiles || []
-  const batches = selectMockupOptionBatches(raw.option_groups || [])
+  const batches = selectMockupOptionBatches(raw.option_groups || [], undefined, productKind)
   return {
+    productKind,
     placement,
     syncFileType: resolveSyncFileType(placement),
     position: buildPrintPositionFromPrintfiles(
       printfiles,
       raw.variant_printfiles,
       [],
-      placement
+      placement,
+      productKind
     ),
     batches,
     optionGroupsAvailable: raw.option_groups || [],
+    optionsAvailable: raw.options || [],
   }
+}
+
+export type MockupShotLike = {
+  url: string
+  title?: string
+  kind?: string
+}
+
+/** Gallery for drinkware: first image is Lifestyle #1, then 2 & 3, then any extras. */
+export function buildDrinkwareLifestyleGallery(
+  shots: MockupShotLike[],
+  extras: string[] = []
+): string[] {
+  const score = (title?: string) => {
+    const t = title || ""
+    const m = /lifestyle\s*(\d+)?/i.exec(t)
+    if (m) return m[1] ? parseInt(m[1], 10) : 1
+    if (/lifestyle/i.test(t)) return 1
+    if (/flat/i.test(t)) return 100
+    return 50
+  }
+
+  const sorted = [...shots].sort((a, b) => score(a.title) - score(b.title))
+  const urls: string[] = []
+  const push = (u?: string) => {
+    if (u && !urls.includes(u) && !u.includes("/floof/design-files/")) urls.push(u)
+  }
+
+  for (const s of sorted) {
+    if (urls.length >= 7) break
+    push(s.url)
+  }
+  for (const u of extras) {
+    if (urls.length >= 7) break
+    push(u)
+  }
+  return urls
 }
 
 export async function loadPrintfulMockupConfig(
@@ -240,17 +433,40 @@ export async function loadPrintfulMockupConfig(
     `/mockup-generator/printfiles/${catalogProductId}`
   )
   const placement = resolveMockupPlacement(raw.available_placements)
-  const batches = selectMockupOptionBatches(raw.option_groups || [], optionGroupsOverride)
+  const productKind = resolveMockupProductKind(raw.available_placements, raw.option_groups)
+
+  let layoutTemplate: LayoutTemplate | null = null
+  if (productKind === "drinkware" && variantIds[0]) {
+    try {
+      const templates = await client.get<MockupTemplatesResult>(
+        `/mockup-generator/templates/${catalogProductId}`
+      )
+      layoutTemplate = findLayoutTemplateForVariant(templates, variantIds[0], placement)
+    } catch {
+      layoutTemplate = null
+    }
+  }
+
+  const batches = selectMockupOptionBatches(
+    raw.option_groups || [],
+    optionGroupsOverride,
+    productKind
+  )
+
   return {
+    productKind,
     placement,
     syncFileType: resolveSyncFileType(placement),
     position: buildPrintPositionFromPrintfiles(
       raw.printfiles || [],
       raw.variant_printfiles,
       variantIds,
-      placement
+      placement,
+      productKind,
+      layoutTemplate
     ),
     batches,
     optionGroupsAvailable: raw.option_groups || [],
+    optionsAvailable: raw.options || [],
   }
 }
