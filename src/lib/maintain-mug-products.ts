@@ -3,6 +3,7 @@ import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
+import type { MockupTaskRunLog } from "./printful-mockup-generator"
 
 export type MaintainMugProductsInput = {
   /** Regenerate Printful lifestyle mockups and refresh Medusa gallery images (mugs only) */
@@ -15,11 +16,25 @@ export type MaintainMugProductsInput = {
   dryRun?: boolean
 }
 
+export type MugProductMaintenanceResult = {
+  productId: string
+  handle: string
+  printfulProductId?: number
+  regenerated: boolean
+  imagesChanged: boolean
+  gallery: string[]
+  mockupTasks: MockupTaskRunLog[]
+  error?: string
+}
+
 export type MaintainMugProductsResult = {
   scanned: number
+  /** @deprecated use mugMatched */
+  matched: number
   mugMatched: number
   titlesUpdated: number
   mockupsRegenerated: number
+  products: MugProductMaintenanceResult[]
   errors: Array<{ productId: string; error: string }>
   logs: string[]
 }
@@ -85,6 +100,7 @@ export async function maintainMugDesignProducts(
   log(`Scanned ${all.length} product(s)${input.dryRun ? " (dry run)" : ""}`)
 
   const errors: MaintainMugProductsResult["errors"] = []
+  const productResults: MugProductMaintenanceResult[] = []
   let titlesUpdated = 0
   let mockupsRegenerated = 0
 
@@ -123,41 +139,73 @@ export async function maintainMugDesignProducts(
   if (input.regenerateMockups) {
     for (const product of mugCandidates) {
       const printfulId = Number(product.metadata?.printful_product_id)
-      if (!printfulId) continue
+      const base: MugProductMaintenanceResult = {
+        productId: product.id,
+        handle: product.handle,
+        printfulProductId: printfulId || undefined,
+        regenerated: false,
+        imagesChanged: false,
+        gallery: [],
+        mockupTasks: [],
+      }
+
+      if (!printfulId) {
+        base.error = "missing printful_product_id metadata"
+        productResults.push(base)
+        continue
+      }
 
       log(`Regenerating mockups for Printful #${printfulId} (${product.handle})`)
-      if (!input.dryRun) {
-        try {
-          await importPrintfulProductToMedusa(printfulId, container, {
-            regenerateMockups: true,
-            catalogProductId: product.metadata?.printful_catalog_product_id
-              ? Number(product.metadata.printful_catalog_product_id)
-              : undefined,
-            category:
-              typeof product.metadata?.category === "string"
-                ? product.metadata.category
-                : "accessories",
-            phrase:
-              typeof product.metadata?.phrase === "string"
-                ? product.metadata.phrase
-                : undefined,
-          })
+      if (input.dryRun) {
+        base.regenerated = true
+        productResults.push(base)
+        continue
+      }
+
+      try {
+        const result = await importPrintfulProductToMedusa(printfulId, container, {
+          regenerateMockups: true,
+          catalogProductId: product.metadata?.printful_catalog_product_id
+            ? Number(product.metadata.printful_catalog_product_id)
+            : undefined,
+          category:
+            typeof product.metadata?.category === "string"
+              ? product.metadata.category
+              : "accessories",
+          phrase:
+            typeof product.metadata?.phrase === "string" ? product.metadata.phrase : undefined,
+        })
+
+        const changed = result.imagesChanged === true
+        base.regenerated = changed
+        base.imagesChanged = changed
+        base.gallery = result.gallery || []
+        base.mockupTasks = result.mockupTasks || []
+
+        if (changed) {
           mockupsRegenerated++
-        } catch (e: unknown) {
-          const msg = e instanceof Error ? e.message : String(e)
-          errors.push({ productId: product.id, error: `mockups: ${msg}` })
+          log(`✓ ${product.handle}: gallery updated (${base.gallery.length} images)`)
+        } else {
+          log(`○ ${product.handle}: mockup run finished but Medusa gallery unchanged`)
         }
-      } else {
-        mockupsRegenerated++
+        productResults.push(base)
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        base.error = msg
+        errors.push({ productId: product.id, error: `mockups: ${msg}` })
+        productResults.push(base)
       }
     }
   }
 
+  const mugMatched = mugCandidates.length
   return {
     scanned: all.length,
-    mugMatched: mugCandidates.length,
+    matched: mugMatched,
+    mugMatched,
     titlesUpdated,
     mockupsRegenerated,
+    products: productResults,
     errors,
     logs,
   }

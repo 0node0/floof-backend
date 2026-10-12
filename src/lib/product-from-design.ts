@@ -23,11 +23,17 @@ import {
 } from "./style-collections"
 import {
   buildDrinkwareLifestyleGallery,
+  buildMugProductGallery,
   loadPrintfulMockupConfig,
   resolveDrinkwareLifestyleOptionGroups,
   stripFloofProductTitle,
   type MockupProductKind,
 } from "./printful-mockup-config"
+import {
+  runPrintfulMockupTask,
+  type MockupTaskRunLog,
+} from "./printful-mockup-generator"
+import { isStockCatalogImageUrl, replaceProductGalleryImages } from "./medusa-product-images"
 
 function drinkwareBatchesFallback() {
   return resolveDrinkwareLifestyleOptionGroups(["Lifestyle", "Lifestyle 2", "Lifestyle 3"]).map(
@@ -80,6 +86,8 @@ export type CreateFromDesignResult = {
     handle: string
     title: string
   } | null
+  mockupTasks?: MockupTaskRunLog[]
+  imagesChanged?: boolean
   logs: string[]
 }
 
@@ -199,76 +207,35 @@ async function runMockupTask(
   position: Record<string, number>,
   optionGroups: string[],
   log: (m: string) => void,
-  /** Printful returns option="Front/Back" not the group name — pass gender from the task */
   genderHint: "male" | "female" | "neutral" = "neutral"
-): Promise<MockupShot[]> {
+): Promise<{ shots: MockupShot[]; taskLog?: MockupTaskRunLog }> {
   const shots: MockupShot[] = []
-  if (!optionGroups.length) return shots
-  log(`Mockup task option_groups=[${optionGroups.join(", ")}] gender=${genderHint}`)
-  const task = await client.post<any>(`/mockup-generator/create-task/${catalogProductId}`, {
-    variant_ids: variantIds,
-    format: "jpg",
-    files: [{ placement, image_url: designUrl, position }],
-    option_groups: optionGroups,
-  })
-  const taskKey = task.task_key || task.taskKey
-  if (!taskKey) {
-    log(`Mockup task missing task_key: ${JSON.stringify(task).slice(0, 200)}`)
-    return shots
+  const group = optionGroups[0]
+  if (!group) return { shots }
+
+  const taskLog = await runPrintfulMockupTask(
+    client,
+    catalogProductId,
+    {
+      variant_ids: variantIds,
+      format: "jpg",
+      files: [{ placement, image_url: designUrl, position }],
+      option_groups: [group],
+    },
+    { log, optionGroupLabel: group, sleep: (ms) => sleep(ms).then(() => undefined) }
+  )
+
+  for (const url of taskLog.mockupUrls) {
+    const title = `${group} · mockup`
+    shots.push({
+      url,
+      kind: /lifestyle/i.test(group) ? "lifestyle" : classifyMockup(title),
+      gender: genderHint !== "neutral" ? genderHint : classifyGender(title),
+      title,
+    })
   }
-  log(`Mockup task_key=${taskKey} — polling…`)
-  for (let i = 0; i < 45; i++) {
-    await sleep(3000)
-    const status = await client.get<any>(
-      `/mockup-generator/task?task_key=${encodeURIComponent(taskKey)}`
-    )
-    const st = status.status || status.task_status
-    log(`Mockup poll ${i + 1}: ${st}`)
-    if (st === "pending" || st === "processing") continue
-    if (st === "completed") {
-      for (const m of status.mockups || []) {
-        // option is usually Front/Back/Left/Right — group name is not returned
-        const view = String(m.option || m.title || m.placement || "front")
-        const groupLabel = optionGroups[0] || view
-        const title = `${groupLabel} · ${view}`
-        const url = m.mockup_url || m.url
-        const isFlat = /flat/i.test(groupLabel) || /flat/i.test(view)
-        if (url && !isFlat) {
-          shots.push({
-            url,
-            kind: /lifestyle/i.test(groupLabel) ? "lifestyle" : classifyMockup(title),
-            gender: genderHint !== "neutral" ? genderHint : classifyGender(title),
-            title,
-          })
-        }
-        if (Array.isArray(m.extra)) {
-          for (const ex of m.extra) {
-            const u = ex.url || ex.mockup_url
-            const t = `${groupLabel} · ${ex.title || ex.option || view}`
-            const flatExtra = /flat/i.test(t)
-            if (u && !flatExtra) {
-              shots.push({
-                url: u,
-                kind: /lifestyle/i.test(t) ? "lifestyle" : classifyMockup(t),
-                gender: genderHint !== "neutral" ? genderHint : classifyGender(t),
-                title: t,
-              })
-            }
-          }
-        }
-      }
-      // Prefer front-facing views first within this batch
-      shots.sort((a, b) => {
-        const score = (t: string) =>
-          /·\s*front/i.test(t) ? 0 : /·\s*back/i.test(t) ? 2 : 1
-        return score(a.title || "") - score(b.title || "")
-      })
-    } else {
-      log(`Mockup generation ended: ${st}`)
-    }
-    break
-  }
-  return shots
+
+  return { shots, taskLog }
 }
 
 /** Generate male + female lifestyle mockups; return curated 7-image gallery. */
@@ -279,7 +246,7 @@ export async function generateLifestyleMockups(opts: {
   designUrl: string
   optionGroups?: string[]
   log: (m: string) => void
-}): Promise<{ shots: MockupShot[]; gallery: string[] }> {
+}): Promise<{ shots: MockupShot[]; gallery: string[]; mockupTasks: MockupTaskRunLog[] }> {
   const { client, catalogProductId, variantIds, designUrl, log } = opts
   let placement = "front"
   let productKind: MockupProductKind = "apparel"
@@ -340,26 +307,27 @@ export async function generateLifestyleMockups(opts: {
 
   const vids = variantIds.slice(0, 2)
   let shots: MockupShot[] = []
+  const mockupTasks: MockupTaskRunLog[] = []
 
   for (const batch of batches) {
-    const groups = batch.optionGroups.filter(Boolean)
-    if (!groups.length) continue
-    try {
-      shots = shots.concat(
-        await runMockupTask(
+    for (const group of batch.optionGroups.filter(Boolean)) {
+      try {
+        const { shots: batchShots, taskLog } = await runMockupTask(
           client,
           catalogProductId,
           vids,
           designUrl,
           placement,
           position,
-          groups,
+          [group],
           log,
           batch.gender
         )
-      )
-    } catch (e: any) {
-      log(`Mockup task failed (${batch.gender}): ${e.message}`)
+        shots = shots.concat(batchShots)
+        if (taskLog) mockupTasks.push(taskLog)
+      } catch (e: any) {
+        log(`Mockup task failed (${group}): ${e.message}`)
+      }
     }
   }
 
@@ -382,7 +350,7 @@ export async function generateLifestyleMockups(opts: {
       ? buildDrinkwareLifestyleGallery(permanized)
       : buildLifestyleGallery(permanized)
   log(`Gallery ready (${gallery.length} images)`)
-  return { shots: permanized, gallery }
+  return { shots: permanized, gallery, mockupTasks }
 }
 
 /** Exact color match (case-insensitive), with light aliases */
@@ -410,13 +378,18 @@ function collectPreviewUrls(syncVariants: any[]): string[] {
   const urls: string[] = []
   for (const sv of syncVariants) {
     for (const f of sv.files || []) {
-      const u = f.preview_url || f.thumbnail_url
+      const u = f.preview_url || f.thumbnail_url || f.url
       if (u && !urls.includes(u)) urls.push(u)
     }
     const productImg = sv.product?.image
     if (productImg && !urls.includes(productImg)) urls.push(productImg)
   }
   return urls
+}
+
+/** Print file previews (flat art), excluding catalog stock photos. */
+function collectFlatArtUrls(syncVariants: any[]): string[] {
+  return collectPreviewUrls(syncVariants).filter((u) => !isStockCatalogImageUrl(u))
 }
 
 /**
@@ -465,8 +438,11 @@ export async function importPrintfulProductToMedusa(
     (lower.includes("hoodie") || lower.includes("sweat") ? "hoodies" : "tees")
 
   const previewUrls = collectPreviewUrls(syncVariants)
+  const flatArtUrls = collectFlatArtUrls(syncVariants)
   let mockups: MockupShot[] = []
   let gallery: string[] = []
+  let mockupTasks: MockupTaskRunLog[] = []
+  let imagesChanged = false
 
   // Design file for mockup generation: prefer the print file on first variant
   const designFile = (syncVariants[0]?.files || []).find(
@@ -476,6 +452,7 @@ export async function importPrintfulProductToMedusa(
     designFile?.url ||
     designFile?.preview_url ||
     syncProduct.thumbnail_url ||
+    flatArtUrls[0] ||
     previewUrls[0]
 
   const catalogProductId =
@@ -483,12 +460,20 @@ export async function importPrintfulProductToMedusa(
     syncVariants[0]?.product?.product_id ||
     (category === "hoodies" ? 146 : 71)
 
+  let mockupProductKind: MockupProductKind = "other"
   if (opts?.regenerateMockups && designUrl) {
     try {
       const variantIds = syncVariants
         .map((v: any) => v.variant_id)
         .filter(Boolean)
         .slice(0, 4)
+      const mockupConfig = await loadPrintfulMockupConfig(
+        client,
+        Number(catalogProductId),
+        variantIds
+      )
+      mockupProductKind = mockupConfig.productKind
+
       const result = await generateLifestyleMockups({
         client,
         catalogProductId: Number(catalogProductId),
@@ -497,17 +482,28 @@ export async function importPrintfulProductToMedusa(
         log,
       })
       mockups = result.shots
-      gallery = result.gallery
+      mockupTasks = result.mockupTasks
+
+      if (mockupProductKind === "drinkware") {
+        gallery = buildMugProductGallery(
+          mockups,
+          flatArtUrls,
+          previewUrls.filter((u) => isStockCatalogImageUrl(u))
+        )
+      } else {
+        gallery = result.gallery
+      }
+      log(`Regenerated gallery (${gallery.length} urls): ${gallery.join(" | ")}`)
     } catch (e: any) {
       log(`Regenerate mockups failed: ${e.message}`)
     }
   }
 
   if (!gallery.length) {
-    gallery = buildLifestyleGallery(mockups, previewUrls)
+    gallery = buildLifestyleGallery(mockups, flatArtUrls.length ? flatArtUrls : previewUrls)
   }
   if (!gallery.length) {
-    gallery = previewUrls.slice(0, 7)
+    gallery = flatArtUrls.slice(0, 7)
   }
 
   const thumbnailUrl = gallery[0] || previewUrls[0] || syncProduct.thumbnail_url
@@ -552,20 +548,30 @@ export async function importPrintfulProductToMedusa(
 
   if (existingProduct && images.length) {
     log(
-      `Updating Medusa product ${existingProduct.id} (${existingProduct.handle}) with ${images.length} gallery images`
+      `Replacing Medusa product ${existingProduct.id} (${existingProduct.handle}) gallery (${images.length} images)`
     )
     const cleanedTitle = stripFloofProductTitle(existingProduct.title)
     try {
+      const replaced = await replaceProductGalleryImages(
+        container,
+        existingProduct.id,
+        images,
+        images[0]
+      )
+      imagesChanged = replaced.imagesChanged || replaced.thumbnailChanged
+      log(
+        `Gallery replace imagesChanged=${replaced.imagesChanged} thumbnailChanged=${replaced.thumbnailChanged}`
+      )
+
       await updateProductsWorkflow(container).run({
         input: {
           products: [
             {
               id: existingProduct.id,
               title: cleanedTitle,
-              thumbnail: images[0],
-              images: images.map((url) => ({ url })),
               metadata: {
                 printful_product_id: printfulProductId,
+                printful_catalog_product_id: catalogProductId,
                 category,
                 phrase,
                 design_pipeline: "product-from-design",
@@ -579,10 +585,9 @@ export async function importPrintfulProductToMedusa(
         handle: existingProduct.handle,
         title: cleanedTitle,
       }
-      log(`Updated images on ${existingProduct.handle}`)
+      log(`Updated product ${existingProduct.handle}`)
     } catch (e: any) {
-      log(`updateProductsWorkflow failed: ${e.message}`)
-      // Do NOT create a duplicate — surface the error
+      log(`Medusa gallery replace failed: ${e.message}`)
       throw new Error(
         `Found product ${existingProduct.handle} but could not update images: ${e.message}`
       )
@@ -616,6 +621,8 @@ export async function importPrintfulProductToMedusa(
     mockups,
     gallery: images,
     medusa,
+    mockupTasks,
+    imagesChanged,
     logs,
   }
 }

@@ -181,6 +181,8 @@ yarn regenerate:mug-mockups
 
 Mug mockups use Printful **Lifestyle / Lifestyle 2 / Lifestyle 3** `option_groups` (one task each), placement **`default`**, and layout **templates** to center art on the front of the wrap. The first gallery image is the primary lifestyle shot.
 
+Maintenance responses include a `products` array per mug with `mockupTasks` (request, poll status, URLs), `gallery`, and `imagesChanged`. `mockupsRegenerated` counts only mugs whose Medusa gallery URLs actually changed. Logs include each Printful `create-task` payload and poll status.
+
 **Admin API:**
 
 ```http
