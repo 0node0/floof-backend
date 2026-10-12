@@ -5,13 +5,13 @@ import { getStagedDesign } from "../../../../lib/design-staging"
  * Public temporary design fetch for Printful file library.
  * GET /floof/design-files/:id
  */
-export async function GET(req: MedusaRequest, res: MedusaResponse) {
+export async function GET(req: MedusaRequest, res: MedusaResponse): Promise<void> {
   const id = (req.params.id as string)?.replace(/\.(png|jpg|jpeg|webp)$/i, "")
   if (!id) {
     res.status(400).json({ error: "missing id" })
     return
   }
-  const entry = getStagedDesign(id)
+  const entry = await getStagedDesign(id)
   if (!entry) {
     res.status(404).json({ error: "not found or expired" })
     return

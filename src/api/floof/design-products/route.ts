@@ -128,7 +128,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         res.status(400).json({ error: "design max 15MB" })
         return
       }
-      const id = stageDesignFile({
+      const id = await stageDesignFile({
         buffer,
         contentType,
         filename: body.filename || `${name || "design"}.png`,

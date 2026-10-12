@@ -4,6 +4,7 @@ import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
+import { sleep } from "./async-sleep"
 
 export type MaintainMugProductsInput = {
   /** Regenerate Printful lifestyle mockups and refresh Medusa gallery images (mugs only) */
@@ -136,8 +137,15 @@ export async function maintainMugDesignProducts(
 
   log(`${mugCandidates.length} mug candidate(s) for mockup regen`)
 
+  const mugGapMs = Number(process.env.MUG_MOCKUP_REGEN_DELAY_MS || 4000)
+
   if (input.regenerateMockups) {
-    for (const product of mugCandidates) {
+    for (let mugIndex = 0; mugIndex < mugCandidates.length; mugIndex++) {
+      const product = mugCandidates[mugIndex]
+      if (mugIndex > 0) {
+        log(`Waiting ${mugGapMs}ms before next mug (rate limits)`)
+        await sleep(mugGapMs)
+      }
       const printfulId = Number(product.metadata?.printful_product_id)
       const base: MugProductMaintenanceResult = {
         productId: product.id,
@@ -177,16 +185,20 @@ export async function maintainMugDesignProducts(
         })
 
         const changed = result.imagesChanged === true
-        base.regenerated = changed
         base.imagesChanged = changed
         base.gallery = result.gallery || []
         base.mockupTasks = result.mockupTasks || []
+        base.regenerated = base.mockupTasks.length > 0
 
         if (changed) {
           mockupsRegenerated++
-          log(`✓ ${product.handle}: gallery updated (${base.gallery.length} images)`)
+          log(`✓ ${product.handle}: new lifestyle mockup(s) in gallery (${base.gallery.length} images)`)
+        } else if (base.mockupTasks.length) {
+          log(
+            `○ ${product.handle}: ${base.mockupTasks.length} mockup task(s) — no new lifestyle URLs in Medusa`
+          )
         } else {
-          log(`○ ${product.handle}: mockup run finished but Medusa gallery unchanged`)
+          log(`○ ${product.handle}: no mockup tasks ran`)
         }
         productResults.push(base)
       } catch (e: unknown) {

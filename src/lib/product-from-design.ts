@@ -24,16 +24,26 @@ import {
 import {
   buildDrinkwareLifestyleGallery,
   buildMugProductGallery,
+  isMugCatalogProductId,
   loadPrintfulMockupConfig,
   resolveDrinkwareLifestyleOptionGroups,
   stripFloofProductTitle,
   type MockupProductKind,
 } from "./printful-mockup-config"
 import {
+  isEphemeralFloofDesignUrl,
+  resolveDurablePrintfulDesignUrl,
+} from "./printful-design-url"
+import { sleep as delay } from "./async-sleep"
+import {
   runPrintfulMockupTask,
   type MockupTaskRunLog,
 } from "./printful-mockup-generator"
-import { isStockCatalogImageUrl, replaceProductGalleryImages } from "./medusa-product-images"
+import {
+  isStockCatalogImageUrl,
+  newLifestyleMockupUrlsAdded,
+  replaceProductGalleryImages,
+} from "./medusa-product-images"
 
 function drinkwareBatchesFallback() {
   return resolveDrinkwareLifestyleOptionGroups(["Lifestyle", "Lifestyle 2", "Lifestyle 3"]).map(
@@ -286,6 +296,11 @@ export async function generateLifestyleMockups(opts: {
     )
   } catch (e: any) {
     log(`printfiles load failed: ${e.message}`)
+    if (isMugCatalogProductId(catalogProductId)) {
+      productKind = "drinkware"
+      placement = "default"
+      log("Treating as drinkware after printfiles failure (mug catalog id)")
+    }
   }
 
   if (!batches.length && productKind !== "drinkware") {
@@ -308,9 +323,15 @@ export async function generateLifestyleMockups(opts: {
   const vids = variantIds.slice(0, 2)
   let shots: MockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
+  const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
+  let taskIndex = 0
 
   for (const batch of batches) {
     for (const group of batch.optionGroups.filter(Boolean)) {
+      if (taskIndex > 0) {
+        await delay(taskGapMs)
+      }
+      taskIndex++
       try {
         const { shots: batchShots, taskLog } = await runMockupTask(
           client,
@@ -444,24 +465,27 @@ export async function importPrintfulProductToMedusa(
   let mockupTasks: MockupTaskRunLog[] = []
   let imagesChanged = false
 
-  // Design file for mockup generation: prefer the print file on first variant
-  const designFile = (syncVariants[0]?.files || []).find(
-    (f: any) => f.type === "default" || f.type === "front"
-  )
-  const designUrl =
-    designFile?.url ||
-    designFile?.preview_url ||
-    syncProduct.thumbnail_url ||
-    flatArtUrls[0] ||
-    previewUrls[0]
-
   const catalogProductId =
     opts?.catalogProductId ||
     syncVariants[0]?.product?.product_id ||
     (category === "hoodies" ? 146 : 71)
 
+  const designUrl = await resolveDurablePrintfulDesignUrl(client, syncVariants, {
+    thumbnailUrl: syncProduct.thumbnail_url,
+    fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
+    log,
+  })
+
   let mockupProductKind: MockupProductKind = "other"
-  if (opts?.regenerateMockups && designUrl) {
+  if (opts?.regenerateMockups) {
+    if (!designUrl) {
+      log("No durable Printful design URL — cannot run mockup tasks")
+    } else if (isEphemeralFloofDesignUrl(designUrl)) {
+      log(`Refusing ephemeral design URL for mockups: ${designUrl}`)
+    }
+  }
+
+  if (opts?.regenerateMockups && designUrl && !isEphemeralFloofDesignUrl(designUrl)) {
     try {
       const variantIds = syncVariants
         .map((v: any) => v.variant_id)
@@ -558,9 +582,16 @@ export async function importPrintfulProductToMedusa(
         images,
         images[0]
       )
-      imagesChanged = replaced.imagesChanged || replaced.thumbnailChanged
+      const lifestyleUrls = mockups
+        .filter((s) => s.kind === "lifestyle")
+        .map((s) => s.url)
+      imagesChanged = newLifestyleMockupUrlsAdded(
+        replaced.previousUrls,
+        replaced.nextUrls,
+        lifestyleUrls
+      )
       log(
-        `Gallery replace imagesChanged=${replaced.imagesChanged} thumbnailChanged=${replaced.thumbnailChanged}`
+        `Gallery replace lifestyleAdded=${imagesChanged} urlsChanged=${replaced.imagesChanged} thumbnailChanged=${replaced.thumbnailChanged}`
       )
 
       await updateProductsWorkflow(container).run({
