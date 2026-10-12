@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest"
 import {
   galleryUrlsChanged,
   isStockCatalogImageUrl,
+  newLifestyleMockupUrlsAdded,
 } from "../../lib/medusa-product-images"
 import { buildMugProductGallery } from "../../lib/printful-mockup-config"
 
@@ -19,6 +20,14 @@ describe("medusa-product-images", () => {
     expect(galleryUrlsChanged(["a", "b"], ["a", "b"])).toBe(false)
     expect(galleryUrlsChanged(["a"], ["a", "b"])).toBe(true)
     expect(galleryUrlsChanged(["a", "b"], ["b", "a"])).toBe(true)
+  })
+
+  it("imagesChanged only when new lifestyle URLs land in gallery", () => {
+    const life = "https://files.cdn.printful.com/files/mock/life.jpg"
+    const flat = "https://files.cdn.printful.com/files/art/flat.png"
+    expect(newLifestyleMockupUrlsAdded([flat], [flat, life], [life])).toBe(true)
+    expect(newLifestyleMockupUrlsAdded([life], [life, flat], [life])).toBe(false)
+    expect(newLifestyleMockupUrlsAdded([flat], [flat], [life])).toBe(false)
   })
 })
 

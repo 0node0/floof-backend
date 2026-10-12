@@ -1,7 +1,15 @@
 /**
- * Short-lived in-memory file staging so Printful can fetch uploaded PNGs
- * from a public backend URL. Single-node Railway is fine; not multi-replica safe.
+ * Design file staging for Printful file library (public HTTPS URL).
+ * Prefers Cloudflare R2 when configured; falls back to in-memory (single-node).
  */
+
+import {
+  getDesignFromR2,
+  isR2StagingEnabled,
+  publicR2DesignUrl,
+  putDesignToR2,
+  readR2ConfigFromEnv,
+} from "./design-r2"
 
 type Entry = {
   buffer: Buffer
@@ -20,34 +28,63 @@ function cleanup() {
   }
 }
 
-export function stageDesignFile(opts: {
+function newDesignId(): string {
+  return `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+}
+
+export async function stageDesignFile(opts: {
   buffer: Buffer
   contentType?: string
   filename?: string
-}): string {
+}): Promise<string> {
   cleanup()
-  const id = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+  const id = newDesignId()
+  const contentType = opts.contentType || "image/png"
+  const filename = opts.filename || "design.png"
+
+  if (isR2StagingEnabled()) {
+    await putDesignToR2(id, opts.buffer, contentType)
+    return id
+  }
+
   store.set(id, {
     buffer: opts.buffer,
-    contentType: opts.contentType || "image/png",
-    filename: opts.filename || "design.png",
+    contentType,
+    filename,
     expiresAt: Date.now() + TTL_MS,
   })
   return id
 }
 
-export function getStagedDesign(id: string): Entry | null {
+export async function getStagedDesign(
+  id: string
+): Promise<{ buffer: Buffer; contentType: string; filename: string } | null> {
   cleanup()
-  const e = store.get(id)
-  if (!e) return null
-  if (Date.now() > e.expiresAt) {
-    store.delete(id)
-    return null
+  const mem = store.get(id)
+  if (mem) {
+    if (Date.now() > mem.expiresAt) {
+      store.delete(id)
+    } else {
+      return {
+        buffer: mem.buffer,
+        contentType: mem.contentType,
+        filename: mem.filename,
+      }
+    }
   }
-  return e
+
+  const r2 = await getDesignFromR2(id)
+  if (r2) {
+    return { ...r2, filename: "design.png" }
+  }
+  return null
 }
 
 export function publicDesignUrl(id: string): string {
+  const r2 = readR2ConfigFromEnv()
+  if (r2) {
+    return publicR2DesignUrl(r2, id)
+  }
   const base = (
     process.env.MEDUSA_BACKEND_URL ||
     process.env.BACKEND_URL ||

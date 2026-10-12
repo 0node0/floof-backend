@@ -6,7 +6,7 @@ Upload a PNG design, create a Printful sync product (with product + lifestyle mo
 
 ```
 PNG (URL or Studio upload)
-    → stage public temp URL (if upload)
+    → stage public URL (R2 when configured, else short-lived in-memory route)
     → Printful File Library
     → Printful Sync Product (front print on selected blanks)
     → Printful Mockup Generator (flat/product + model/lifestyle)
@@ -36,7 +36,9 @@ Set `FLOOF_ADMIN_KEY` on the backend (Railway). All design endpoints require:
 x-floof-admin-key: <same secret>
 ```
 
-Also set `MEDUSA_BACKEND_URL` to the **public** Railway backend URL so Printful can download staged uploads.
+Set `R2_*` env vars for **durable** design uploads (recommended). Otherwise set `MEDUSA_BACKEND_URL` to the public backend URL so Printful can fetch `/floof/design-files/…` (not durable across redeploys).
+
+Mockup regen always uses **Printful file library** URLs (`files.cdn.printful.com/files/…`) from sync variants or `GET /files/{id}` — never ephemeral Floof staging URLs.
 
 ## API
 
@@ -149,6 +151,11 @@ PRINTFUL_API_TOKEN=…
 PRINTFUL_STORE_ID=…          # if using multi-store / OAuth token
 FLOOF_ADMIN_KEY=…            # openssl rand -hex 32
 MEDUSA_BACKEND_URL=https://api.floof.space
+R2_ACCOUNT_ID=…
+R2_ACCESS_KEY_ID=…
+R2_SECRET_ACCESS_KEY=…
+R2_BUCKET=floof-designs
+R2_PUBLIC_BASE_URL=https://designs.floof.space
 PRINTFUL_AUTO_CONFIRM=true   # false = Printful orders stay draft for manual review
 ```
 
@@ -181,7 +188,7 @@ yarn regenerate:mug-mockups
 
 Mug mockups use Printful **Lifestyle / Lifestyle 2 / Lifestyle 3** `option_groups` (one task each), placement **`default`**, and layout **templates** to center art on the front of the wrap. The first gallery image is the primary lifestyle shot.
 
-Maintenance responses include a `products` array per mug with `mockupTasks` (request, poll status, URLs), `gallery`, and `imagesChanged`. `mockupsRegenerated` counts only mugs whose Medusa gallery URLs actually changed. Logs include each Printful `create-task` payload and poll status.
+Maintenance responses include a `products` array per mug with `mockupTasks` (request, poll status, URLs), `gallery`, and `imagesChanged`. `imagesChanged` is true only when a **new lifestyle mockup URL** was added to the Medusa gallery. `mockupsRegenerated` uses that same flag. Mugs are processed **sequentially** with backoff between products and between Printful tasks. Logs include each Printful `create-task` payload and poll status.
 
 **Admin API:**
 

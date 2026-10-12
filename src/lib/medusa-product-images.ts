@@ -27,6 +27,21 @@ export function galleryUrlsChanged(before: string[], after: string[]): boolean {
   return false
 }
 
+/**
+ * True when this mockup run produced at least one lifestyle URL that was not already on the product.
+ */
+export function newLifestyleMockupUrlsAdded(
+  before: string[],
+  after: string[],
+  lifestyleUrlsFromRun: string[]
+): boolean {
+  const prev = new Set(normalizeGallery(before))
+  const next = new Set(normalizeGallery(after))
+  const fromRun = normalizeGallery(lifestyleUrlsFromRun)
+  if (!fromRun.length) return false
+  return fromRun.some((u) => next.has(u) && !prev.has(u))
+}
+
 /** Catalog blank / stock photos (not generated mockups). */
 export function isStockCatalogImageUrl(url: string): boolean {
   return /files\.cdn\.printful\.com\/products\//i.test(url) || /\/products\/\d+\//i.test(url)

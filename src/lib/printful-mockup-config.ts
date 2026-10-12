@@ -65,6 +65,22 @@ export type ResolvedPrintfulMockupConfig = {
   optionsAvailable: string[]
 }
 
+export function mugCatalogProductIdsFromEnv(): Set<number> {
+  const raw =
+    process.env.MUG_CATALOG_PRODUCT_IDS ||
+    process.env.MUG_CATALOG_PRODUCT_ID ||
+    "19,483"
+  const ids = raw
+    .split(",")
+    .map((s) => parseInt(s.trim(), 10))
+    .filter((n) => !Number.isNaN(n))
+  return new Set(ids)
+}
+
+export function isMugCatalogProductId(catalogProductId: number): boolean {
+  return mugCatalogProductIdsFromEnv().has(catalogProductId)
+}
+
 const DEFAULT_POSITION: Record<string, number> = {
   area_width: 1800,
   area_height: 2400,
