@@ -393,6 +393,26 @@ export type MockupShotLike = {
 }
 
 /** Gallery for drinkware: first image is Lifestyle #1, then 2 & 3, then any extras. */
+/** Lifestyle mockups first, then flat print-art previews (no stock catalog blanks). */
+export function buildMugProductGallery(
+  lifestyleShots: MockupShotLike[],
+  flatArtUrls: string[] = [],
+  excludeUrls: string[] = []
+): string[] {
+  const exclude = new Set(excludeUrls.filter(Boolean))
+  const lifestyle = buildDrinkwareLifestyleGallery(
+    lifestyleShots.filter((s) => s.url && !exclude.has(s.url))
+  )
+  const flat = flatArtUrls.filter((u) => u && !exclude.has(u) && !lifestyle.includes(u))
+  const urls: string[] = []
+  const push = (u?: string) => {
+    if (u && !urls.includes(u)) urls.push(u)
+  }
+  for (const u of lifestyle) push(u)
+  for (const u of flat) push(u)
+  return urls.slice(0, 10)
+}
+
 export function buildDrinkwareLifestyleGallery(
   shots: MockupShotLike[],
   extras: string[] = []
