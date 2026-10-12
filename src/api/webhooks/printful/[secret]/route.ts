@@ -24,8 +24,7 @@ function checkRateLimit(key: string, max = 120, windowMs = 60_000): boolean {
  *
  * To enable extra defense-in-depth, we verify that the `:secret` path
  * param matches the PRINTFUL_WEBHOOK_PATH env var. If the env var is
- * not set, we accept any request to /webhooks/printful/<anything>
- * (less secure — only useful for local dev / curl testing).
+ * not set, requests are rejected with 503.
  *
  * The Medusa file-based router extracts the path segment into
  * `req.params.secret` because this file lives in the [secret] folder.
@@ -60,20 +59,21 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     process.env.PRINTFUL_WEBHOOK_PATH || process.env.PRINTFUL_WEBHOOK_SECRET || ""
   const requestSecret = (req.params as any)?.secret || ""
 
-  if (configuredPath) {
-    if (
-      requestSecret.length !== configuredPath.length ||
-      requestSecret !== configuredPath
-    ) {
-      logger.warn(
-        `[printful-webhook] Path mismatch: request_secret_len=${requestSecret.length} configured_len=${configuredPath.length}`
-      )
-      return res.status(404).json({ error: "Not found" })
-    }
-  } else {
-    logger.warn(
-      "[printful-webhook] PRINTFUL_WEBHOOK_PATH not configured — accepting any request to /webhooks/printful/<anything> (DEV ONLY)"
+  if (!configuredPath) {
+    logger.error(
+      "[printful-webhook] PRINTFUL_WEBHOOK_PATH (or PRINTFUL_WEBHOOK_SECRET) is not set — rejecting request"
     )
+    return res.status(503).json({ error: "Webhook not configured" })
+  }
+
+  if (
+    requestSecret.length !== configuredPath.length ||
+    requestSecret !== configuredPath
+  ) {
+    logger.warn(
+      `[printful-webhook] Path mismatch: request_secret_len=${requestSecret.length} configured_len=${configuredPath.length}`
+    )
+    return res.status(404).json({ error: "Not found" })
   }
 
   // ---- Parse payload ----
@@ -123,10 +123,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
     process.env.PRINTFUL_WEBHOOK_PATH || process.env.PRINTFUL_WEBHOOK_SECRET || ""
   const requestSecret = (req.params as any)?.secret || ""
 
-  const match = !configuredPath || requestSecret === configuredPath
+  if (!configuredPath) {
+    return res.status(503).json({ ok: false, configured: false, error: "Webhook not configured" })
+  }
+  const match = requestSecret === configuredPath
   return res.status(match ? 200 : 404).json({
     ok: match,
-    configured: !!configuredPath,
+    configured: true,
     requestSecretLength: requestSecret.length,
   })
 }

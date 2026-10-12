@@ -1,5 +1,7 @@
 import { Stripe } from "stripe"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
+import { stripeAutomaticTaxEnabled } from "../../../../lib/checkout-config"
+import { quoteShippingForCart, stripeShippingOptions } from "../../../../lib/checkout-shipping"
 
 /**
  * POST /store/checkout/create-session
@@ -47,6 +49,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         "items.*",
         "items.variant.id",
         "items.variant.title",
+        "items.variant.metadata",
+        "items.metadata",
         "items.quantity",
         "items.unit_price",
       ],
@@ -76,8 +80,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       return res.status(400).json({ error: "Cart has no line items" })
     }
 
+    const currency = (cart.currency_code || "usd").toLowerCase()
+    const shippingQuote = await quoteShippingForCart(container, cart)
+
     // Create the Checkout Session (hosted — no Elements)
-    const session = await stripe.checkout.sessions.create({
+    const sessionParams: Stripe.Checkout.SessionCreateParams = {
       mode: "payment",
       payment_method_types: ["card"],
       line_items: lineItems,
@@ -88,6 +95,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       metadata: {
         cart_id,
         medusa_backend_url: backendUrl,
+        shipping_source: shippingQuote.source,
+        shipping_display_name: shippingQuote.displayName,
       },
       payment_intent_data: {
         metadata: {
@@ -97,8 +106,16 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       shipping_address_collection: {
         allowed_countries: ["US"],
       },
+      shipping_options: stripeShippingOptions(shippingQuote, currency),
       phone_number_collection: { enabled: true },
-    })
+    }
+
+    if (stripeAutomaticTaxEnabled()) {
+      sessionParams.automatic_tax = { enabled: true }
+      sessionParams.customer_update = { shipping: "auto" }
+    }
+
+    const session = await stripe.checkout.sessions.create(sessionParams)
 
     logger.info(`[checkout-session] Created session ${session.id} for cart ${cart_id}`)
 

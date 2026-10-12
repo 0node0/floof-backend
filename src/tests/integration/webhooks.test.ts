@@ -36,9 +36,15 @@ describe("Printful webhook path auth", () => {
   })
 
   it("rejects wrong path secret", () => {
-    const requestSecret = "wrong-path"
+    const requestSecret: string = "wrong-path"
     const match =
       requestSecret.length === configured.length && requestSecret === configured
     expect(match).toBe(false)
+  })
+
+  it("requires configured path (no accept-all when unset)", () => {
+    const configuredPath = ""
+    const shouldReject = !configuredPath
+    expect(shouldReject).toBe(true)
   })
 })

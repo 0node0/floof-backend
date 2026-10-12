@@ -17,6 +17,10 @@ import {
   updateProductsWorkflow,
 } from "@medusajs/medusa/core-flows"
 import PrintfulApiClient from "../modules/printful/client"
+import {
+  ensureStyleCollection,
+  linkProductToStyleCollection,
+} from "./style-collections"
 
 export type GarmentKind = "tee" | "hoodie"
 
@@ -33,6 +37,10 @@ export type CreateFromDesignInput = {
   generateMockups?: boolean
   mockupOptionGroups?: string[]
   phrase?: string
+  /** Style collection handle (e.g. retro, minimal) */
+  style?: string
+  /** When true, Medusa product is created as draft (unpublished) */
+  draft?: boolean
 }
 
 export type MockupShot = {
@@ -799,6 +807,8 @@ export async function createProductFromDesign(
         syncVariants,
         retailPrice,
         printfulProductId: syncProductId,
+        status: input.draft ? "draft" : "published",
+        styleHandle: input.style,
         log,
       })
     } catch (e: any) {
@@ -835,6 +845,8 @@ async function createMedusaProduct(
     syncVariants: any[]
     retailPrice: string
     printfulProductId: number
+    status?: "draft" | "published"
+    styleHandle?: string
     log: (m: string) => void
   }
 ) {
@@ -912,7 +924,7 @@ async function createMedusaProduct(
     title: opts.title,
     handle,
     description: opts.description,
-    status: "published",
+    status: opts.status || "published",
     options: [
       { title: "Size", values: Array.from(sizeSet) },
       { title: "Color", values: Array.from(colorSet) },
@@ -937,7 +949,19 @@ async function createMedusaProduct(
   })
 
   const p = result[0]
-  opts.log(`Medusa product created id=${p.id}`)
+  opts.log(`Medusa product created id=${p.id} status=${opts.status || "published"}`)
+
+  if (opts.styleHandle?.trim()) {
+    try {
+      const collection = await ensureStyleCollection(container, opts.styleHandle)
+      await linkProductToStyleCollection(container, collection.id, p.id)
+      opts.log(`Linked product to style collection "${collection.handle}"`)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      opts.log(`Style collection link failed: ${msg}`)
+      throw new Error(`Product created but style collection link failed: ${msg}`)
+    }
+  }
 
   return {
     productId: p.id,
