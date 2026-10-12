@@ -2,6 +2,7 @@ import { Stripe } from "stripe"
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { stripeAutomaticTaxEnabled } from "../../../../lib/checkout-config"
 import { quoteShippingForCart, stripeShippingOptions } from "../../../../lib/checkout-shipping"
+import { stripeAutomaticTaxFields } from "../../../../lib/stripe-checkout-tax"
 
 /**
  * POST /store/checkout/create-session
@@ -110,10 +111,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       phone_number_collection: { enabled: true },
     }
 
-    if (stripeAutomaticTaxEnabled()) {
-      sessionParams.automatic_tax = { enabled: true }
-      sessionParams.customer_update = { shipping: "auto" }
-    }
+    Object.assign(sessionParams, stripeAutomaticTaxFields(stripeAutomaticTaxEnabled()))
 
     const session = await stripe.checkout.sessions.create(sessionParams)
 
