@@ -10,19 +10,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 make g++ openssl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install deps
-COPY package.json yarn.lock* ./
-RUN yarn install --immutable 2>/dev/null || yarn install
+# Install deps from committed lockfile (reproducible builds)
+COPY package.json package-lock.json ./
+RUN npm ci
 
 # Copy source
 COPY tsconfig.json medusa-config.ts ./
 COPY src ./src
 
 # Build Medusa
-RUN yarn build
+RUN npm run build
 
-# Re-install production deps in the built server directory
-RUN cd .medusa/server && yarn install --production=true --ignore-scripts
+# Production deps for the compiled server bundle
+RUN cd .medusa/server && npm ci --omit=dev --ignore-scripts
 
 # ---- Runtime stage ----
 FROM node:22-bookworm-slim AS runtime
