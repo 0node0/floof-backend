@@ -5,11 +5,11 @@ import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 
 export type MaintainMugProductsInput = {
-  /** Regenerate Printful lifestyle mockups and refresh Medusa gallery images */
+  /** Regenerate Printful lifestyle mockups and refresh Medusa gallery images (mugs only) */
   regenerateMockups?: boolean
-  /** Strip legacy "FLOOF —" from Medusa product titles */
+  /** Strip legacy "FLOOF —" from Medusa product titles (all products) */
   stripFloofPrefix?: boolean
-  /** Limit to these Medusa product ids */
+  /** Limit mockup regen to these Medusa product ids */
   productIds?: string[]
   /** Dry run — log actions only */
   dryRun?: boolean
@@ -17,7 +17,7 @@ export type MaintainMugProductsInput = {
 
 export type MaintainMugProductsResult = {
   scanned: number
-  matched: number
+  mugMatched: number
   titlesUpdated: number
   mockupsRegenerated: number
   errors: Array<{ productId: string; error: string }>
@@ -37,7 +37,7 @@ function mugCatalogIdsFromEnv(): Set<string> {
   )
 }
 
-function looksLikeMug(product: {
+export function looksLikeMug(product: {
   title?: string
   handle?: string
   description?: string
@@ -56,6 +56,7 @@ function looksLikeMug(product: {
 
 /**
  * Regenerate mockups for existing mug products and/or strip FLOOF title prefixes.
+ * Title cleanup runs for every product; mockup regen is mug-only.
  */
 export async function maintainMugDesignProducts(
   container: MedusaContainer,
@@ -81,30 +82,16 @@ export async function maintainMugDesignProducts(
     metadata?: Record<string, unknown>
   }>
 
-  let matched = all.filter((p) => {
-    if (input.productIds?.length && !input.productIds.includes(p.id)) return false
-    return looksLikeMug(p)
-  })
-
-  if (!input.productIds?.length) {
-    matched = matched.filter((p) => p.metadata?.printful_product_id != null)
-  }
-
-  log(
-    `Scanned ${all.length} products; ${matched.length} mug candidate(s)${
-      input.dryRun ? " (dry run)" : ""
-    }`
-  )
+  log(`Scanned ${all.length} product(s)${input.dryRun ? " (dry run)" : ""}`)
 
   const errors: MaintainMugProductsResult["errors"] = []
   let titlesUpdated = 0
   let mockupsRegenerated = 0
 
-  for (const product of matched) {
-    const printfulId = Number(product.metadata?.printful_product_id)
-    const cleanedTitle = stripFloofProductTitle(product.title)
-
-    if (input.stripFloofPrefix && cleanedTitle !== product.title) {
+  if (input.stripFloofPrefix) {
+    for (const product of all) {
+      const cleanedTitle = stripFloofProductTitle(product.title)
+      if (cleanedTitle === product.title) continue
       log(`Title: "${product.title}" → "${cleanedTitle}" (${product.handle})`)
       if (!input.dryRun) {
         try {
@@ -122,8 +109,22 @@ export async function maintainMugDesignProducts(
         titlesUpdated++
       }
     }
+  }
 
-    if (input.regenerateMockups && printfulId) {
+  let mugCandidates = all.filter((p) => looksLikeMug(p))
+  if (input.productIds?.length) {
+    mugCandidates = mugCandidates.filter((p) => input.productIds!.includes(p.id))
+  } else {
+    mugCandidates = mugCandidates.filter((p) => p.metadata?.printful_product_id != null)
+  }
+
+  log(`${mugCandidates.length} mug candidate(s) for mockup regen`)
+
+  if (input.regenerateMockups) {
+    for (const product of mugCandidates) {
+      const printfulId = Number(product.metadata?.printful_product_id)
+      if (!printfulId) continue
+
       log(`Regenerating mockups for Printful #${printfulId} (${product.handle})`)
       if (!input.dryRun) {
         try {
@@ -154,7 +155,7 @@ export async function maintainMugDesignProducts(
 
   return {
     scanned: all.length,
-    matched: matched.length,
+    mugMatched: mugCandidates.length,
     titlesUpdated,
     mockupsRegenerated,
     errors,

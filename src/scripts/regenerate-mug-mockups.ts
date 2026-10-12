@@ -36,7 +36,7 @@ export default async function regenerateMugMockups({ container }: ExecArgs) {
 
   for (const line of result.logs) logger.info(line)
   logger.info(
-    `Done: matched=${result.matched} titlesUpdated=${result.titlesUpdated} mockupsRegenerated=${result.mockupsRegenerated} errors=${result.errors.length}`
+    `Done: mugs=${result.mugMatched} titlesUpdated=${result.titlesUpdated} mockupsRegenerated=${result.mockupsRegenerated} errors=${result.errors.length}`
   )
   if (result.errors.length) {
     for (const err of result.errors) {

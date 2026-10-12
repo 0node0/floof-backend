@@ -22,9 +22,21 @@ import {
   linkProductToStyleCollection,
 } from "./style-collections"
 import {
+  buildDrinkwareLifestyleGallery,
   loadPrintfulMockupConfig,
+  resolveDrinkwareLifestyleOptionGroups,
   stripFloofProductTitle,
+  type MockupProductKind,
 } from "./printful-mockup-config"
+
+function drinkwareBatchesFallback() {
+  return resolveDrinkwareLifestyleOptionGroups(["Lifestyle", "Lifestyle 2", "Lifestyle 3"]).map(
+    (g) => ({
+      optionGroups: [g],
+      gender: "neutral" as const,
+    })
+  )
+}
 
 export type GarmentKind = "tee" | "hoodie"
 
@@ -220,10 +232,11 @@ async function runMockupTask(
         const groupLabel = optionGroups[0] || view
         const title = `${groupLabel} · ${view}`
         const url = m.mockup_url || m.url
-        if (url) {
+        const isFlat = /flat/i.test(groupLabel) || /flat/i.test(view)
+        if (url && !isFlat) {
           shots.push({
             url,
-            kind: "lifestyle",
+            kind: /lifestyle/i.test(groupLabel) ? "lifestyle" : classifyMockup(title),
             gender: genderHint !== "neutral" ? genderHint : classifyGender(title),
             title,
           })
@@ -232,10 +245,11 @@ async function runMockupTask(
           for (const ex of m.extra) {
             const u = ex.url || ex.mockup_url
             const t = `${groupLabel} · ${ex.title || ex.option || view}`
-            if (u) {
+            const flatExtra = /flat/i.test(t)
+            if (u && !flatExtra) {
               shots.push({
                 url: u,
-                kind: "lifestyle",
+                kind: /lifestyle/i.test(t) ? "lifestyle" : classifyMockup(t),
                 gender: genderHint !== "neutral" ? genderHint : classifyGender(t),
                 title: t,
               })
@@ -268,6 +282,7 @@ export async function generateLifestyleMockups(opts: {
 }): Promise<{ shots: MockupShot[]; gallery: string[] }> {
   const { client, catalogProductId, variantIds, designUrl, log } = opts
   let placement = "front"
+  let productKind: MockupProductKind = "apparel"
   let position: Record<string, number> = {
     area_width: 1800,
     area_height: 2400,
@@ -287,10 +302,14 @@ export async function generateLifestyleMockups(opts: {
     )
     placement = mockupConfig.placement
     position = mockupConfig.position
+    productKind = mockupConfig.productKind
     batches = mockupConfig.batches
     log(
-      `Mockup placement=${placement}; groups available: ${mockupConfig.optionGroupsAvailable
-        .filter((g) => /lifestyle|men|women/i.test(g))
+      `Mockup kind=${productKind} placement=${placement}; position=${JSON.stringify(position)}`
+    )
+    log(
+      `Mockup groups available: ${mockupConfig.optionGroupsAvailable
+        .filter((g) => /lifestyle|men|women|flat/i.test(g))
         .join(", ")}`
     )
     log(
@@ -302,7 +321,7 @@ export async function generateLifestyleMockups(opts: {
     log(`printfiles load failed: ${e.message}`)
   }
 
-  if (!batches.length) {
+  if (!batches.length && productKind !== "drinkware") {
     batches = [
       {
         optionGroups: ["Men's Lifestyle", "Men's Lifestyle 2", "Men's Lifestyle 3"],
@@ -314,6 +333,9 @@ export async function generateLifestyleMockups(opts: {
       },
     ]
     log("Using fallback apparel lifestyle mockup groups")
+  } else if (!batches.length && productKind === "drinkware") {
+    batches = drinkwareBatchesFallback()
+    log(`Using fallback drinkware lifestyle groups: ${batches.map((b) => b.optionGroups[0]).join(", ")}`)
   }
 
   const vids = variantIds.slice(0, 2)
@@ -355,7 +377,10 @@ export async function generateLifestyleMockups(opts: {
   for (const s of shots) {
     permanized.push({ ...s, url: await permanizeMockupUrl(client, s.url, log) })
   }
-  const gallery = buildLifestyleGallery(permanized)
+  const gallery =
+    productKind === "drinkware"
+      ? buildDrinkwareLifestyleGallery(permanized)
+      : buildLifestyleGallery(permanized)
   log(`Gallery ready (${gallery.length} images)`)
   return { shots: permanized, gallery }
 }
