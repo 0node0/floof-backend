@@ -59,6 +59,7 @@ export type MockupTaskRunLog = {
   pollAttempts: number
   validation?: {
     pixelDiffRatio?: number
+    inBoxPixelDiffRatio?: number
     passed?: boolean
     unknown?: boolean
     comparedToBlankUrl?: string

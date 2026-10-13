@@ -13,8 +13,7 @@ import {
 } from "./apparel-mockup-options"
 import {
   fetchImageBuffer,
-  mockupPixelDifference,
-  mockupShowsDesign,
+  validateMockupArtVisibility,
 } from "./apparel-mockup-validation"
 import {
   buildApparelFullBleedPosition,
@@ -151,8 +150,9 @@ async function validateMockupAgainstMatchedBlank(
   blankUrl: string,
   design: MockupImageCandidate,
   blank: MockupImageCandidate,
+  printPosition: ApparelPrintPosition,
   log: (m: string) => void
-): Promise<{ pixelDiffRatio: number; passed: boolean }> {
+): Promise<{ pixelDiffRatio: number; inBoxPixelDiffRatio: number; passed: boolean }> {
   log(
     `Mockup validation view=${design.view} option="${design.option}" ` +
       `blankOption="${blank.option}" design=${designUrl.slice(0, 64)}…`
@@ -161,11 +161,16 @@ async function validateMockupAgainstMatchedBlank(
     fetchImageBuffer(designUrl),
     fetchImageBuffer(blankUrl),
   ])
-  const diff = await mockupPixelDifference(designBuf, blankBuf)
+  const result = await validateMockupArtVisibility(designBuf, blankBuf, printPosition)
   log(
-    `Mockup validation: ${(diff.ratio * 100).toFixed(2)}% pixels differ from matched blank`
+    `Mockup validation: full ${(result.fullFrameRatio * 100).toFixed(2)}% differ, ` +
+      `in-box ${(result.inBoxRatio * 100).toFixed(2)}% differ (region ${result.region.width}×${result.region.height})`
   )
-  return { pixelDiffRatio: diff.ratio, passed: mockupShowsDesign(diff) }
+  return {
+    pixelDiffRatio: result.fullFrameRatio,
+    inBoxPixelDiffRatio: result.inBoxRatio,
+    passed: result.passed,
+  }
 }
 
 async function runPlacementMockupTask(opts: {
@@ -284,6 +289,8 @@ export async function generateApparelPlacementMockups(opts: {
 }): Promise<{
   shots: ApparelMockupShot[]
   gallery: string[]
+  validatedGallery: string[]
+  hasValidatedMockups: boolean
   mockupTasks: MockupTaskRunLog[]
 }> {
   const { client, catalogProductId, variantIds, layout, log } = opts
@@ -291,6 +298,7 @@ export async function generateApparelPlacementMockups(opts: {
   const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 6)
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 3000)
   let shots: ApparelMockupShot[] = []
+  const validatedShots: ApparelMockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
   let hasPassingFront = false
   let hasPassingBack = false
@@ -424,10 +432,12 @@ export async function generateApparelPlacementMockups(opts: {
                 blankMatch.url,
                 designCandidate,
                 blankMatch,
+                printFile.printPosition,
                 log
               )
               taskLog.validation = {
                 pixelDiffRatio: validation.pixelDiffRatio,
+                inBoxPixelDiffRatio: validation.inBoxPixelDiffRatio,
                 passed: validation.passed,
                 comparedToBlankUrl: blankMatch.url,
                 designOption: designCandidate.option,
@@ -455,6 +465,7 @@ export async function generateApparelPlacementMockups(opts: {
           if (taskLog.validation?.passed) {
             if (placement === "front") hasPassingFront = true
             if (placement === "back") hasPassingBack = true
+            validatedShots.push(finalShot)
           } else if (usedFallback && placement === "back") {
             hasPassingBack = true
           }
@@ -501,7 +512,18 @@ export async function generateApparelPlacementMockups(opts: {
   }
 
   shots = dedupeMockupShotsByScene(shots)
+  const validatedDeduped = dedupeMockupShotsByScene(validatedShots)
   const gallery = buildLifestyleGalleryFromShots(shots)
-  log(`Apparel placement gallery (${gallery.length} images)`)
-  return { shots, gallery, mockupTasks }
+  const validatedGallery = buildLifestyleGalleryFromShots(validatedDeduped)
+  const hasValidatedMockups = validatedGallery.length > 0
+  log(
+    `Apparel placement gallery (${gallery.length} images, ${validatedGallery.length} validated)`
+  )
+  return {
+    shots,
+    gallery,
+    validatedGallery,
+    hasValidatedMockups,
+    mockupTasks,
+  }
 }

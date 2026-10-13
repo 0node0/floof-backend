@@ -462,17 +462,24 @@ export async function maintainApparelPlacements(
         log,
       })
       base.mockupTasks = mockupResult.mockupTasks
-      base.mockupUrls = mockupResult.gallery
-      base.regenerated = mockupResult.mockupTasks.length > 0
+      base.mockupUrls = mockupResult.validatedGallery.length
+        ? mockupResult.validatedGallery
+        : mockupResult.gallery
+      base.regenerated = mockupResult.hasValidatedMockups
 
-      if (mockupResult.gallery.length) {
+      if (mockupResult.hasValidatedMockups && mockupResult.validatedGallery.length) {
         const replaced = await replaceProductGalleryImages(
           container,
           product.id,
-          mockupResult.gallery,
-          mockupResult.gallery[0]
+          mockupResult.validatedGallery,
+          mockupResult.validatedGallery[0]
         )
         base.imagesChanged = replaced.imagesChanged
+      } else if (mockupResult.gallery.length && !mockupResult.hasValidatedMockups) {
+        log(
+          `Skipping Medusa gallery update for ${product.handle}: no mockups passed validation`
+        )
+        base.imagesChanged = false
       }
 
       if (!mockupsOnly) {

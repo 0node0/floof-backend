@@ -19,18 +19,29 @@ export async function loadMockupTemplates(
   return client.get<MockupTemplatesResult>(`/mockup-generator/templates/${catalogProductId}`)
 }
 
-/** Map printfile coordinates (e.g. 1800×2400) onto template print_area using scale = print_area_width / area_width. */
+/**
+ * Map print-file pixels (12″×16″ @ 1800×2400) onto the template image.
+ * Art **size** uses template_width/height so 3.75″ reads correctly on the visible shirt;
+ * position anchors within print_area_left/top using print_area_width/height.
+ */
 export function computeTemplateArtRect(
   template: LayoutTemplate,
   printPosition: ApparelPrintPosition
 ): { left: number; top: number; width: number; height: number } {
   const box = clampPrintPosition(printPosition)
-  const printAreaW = template.print_area_width || template.template_width || 560
-  const scale = printAreaW / box.area_width
-  const width = Math.round(box.width * scale)
-  const height = Math.round(box.height * scale)
-  const left = Math.round((template.print_area_left || 0) + box.left * scale)
-  const top = Math.round((template.print_area_top || 0) + box.top * scale)
+  const printFileW = box.area_width
+  const printFileH = box.area_height
+  const shirtW = template.template_width || template.print_area_width || 560
+  const shirtH = template.template_height || template.print_area_height || 295
+  const printSpanW = template.print_area_width || shirtW
+  const printSpanH = template.print_area_height || shirtH
+  const printL = template.print_area_left ?? 0
+  const printT = template.print_area_top ?? 0
+
+  const width = Math.round((box.width / printFileW) * shirtW)
+  const height = Math.round((box.height / printFileH) * shirtH)
+  const left = Math.round(printL + (box.left / printFileW) * printSpanW)
+  const top = Math.round(printT + (box.top / printFileH) * printSpanH)
   return { left, top, width, height }
 }
 

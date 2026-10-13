@@ -33,9 +33,8 @@ describe("apparel-mockup-template extract", () => {
     expect(extract.height).toBe(563)
 
     const rect = computeTemplateArtRect(template, position)
-    const scale = 400 / 1800
-    expect(rect.width).toBe(Math.round(563 * scale))
-    expect(rect.left).toBe(Math.round(200 + 1219 * scale))
+    expect(rect.width).toBe(Math.round((563 / 1800) * 800))
+    expect(rect.left).toBe(Math.round(200 + (1219 / 1800) * 400))
   })
 
   it("centred 1275 wide @ (263, 563) scales to print_area_width", () => {
@@ -52,10 +51,8 @@ describe("apparel-mockup-template extract", () => {
     expect(extract.left).toBe(263)
 
     const rect = computeTemplateArtRect(template, position)
-    const scale = 400 / 1800
-    expect(rect.width).toBe(Math.round(1275 * scale))
-    const centeredInArea = Math.round((400 - 1275 * scale) / 2)
-    expect(Math.abs(rect.left - (200 + centeredInArea))).toBeLessThanOrEqual(1)
+    expect(rect.width).toBe(Math.round((1275 / 1800) * 800))
+    expect(rect.left).toBe(Math.round(200 + (263 / 1800) * 400))
   })
 
   it("clamps extract when coordinates exceed image bounds", () => {
