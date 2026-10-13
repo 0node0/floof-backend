@@ -8,7 +8,10 @@ import {
 import { publicDesignUrl, stageDesignFile } from "../../../lib/design-staging"
 import { setFloofCors } from "../../../lib/cors"
 import { maintainMugDesignProducts } from "../../../lib/maintain-mug-products"
-import { maintainApparelPlacements } from "../../../lib/maintain-apparel-placements"
+import {
+  applyApparelProductGallery,
+  maintainApparelPlacements,
+} from "../../../lib/maintain-apparel-placements"
 import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
 import { startApparelMaintenanceJob } from "../../../lib/apparel-maintenance-jobs"
 import { parseApparelLayout } from "../../../lib/apparel-placement-layout"
@@ -123,6 +126,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
+  if (body.maintenance === "applyGallery") {
+    const productId = body.productId != null ? String(body.productId) : ""
+    const imageUrls = Array.isArray(body.imageUrls)
+      ? body.imageUrls.map((u: unknown) => String(u))
+      : []
+    try {
+      const result = await applyApparelProductGallery(req.scope, {
+        productId,
+        imageUrls,
+      })
+      res.status(200).json({ ok: true, maintenance: "applyGallery", ...result })
+    } catch (e: any) {
+      console.error("[floof/design-products applyGallery]", e)
+      res.status(400).json({ error: e.message || "applyGallery failed" })
+    }
+    return
+  }
+
   if (body.maintenance === "regenerateApparelPlacements") {
     const layouts: Record<string, "leftChest" | "chestPlusBack" | "centred"> = {}
     if (body.layouts && typeof body.layouts === "object" && !Array.isArray(body.layouts)) {
@@ -145,6 +166,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     const apparelInput = {
       dryRun: body.dryRun === true || body.dryRun === "true",
       mockupsOnly: body.mockupsOnly === true || body.mockupsOnly === "true",
+      reviewOnly: body.reviewOnly === true || body.reviewOnly === "true",
       productIds: Array.isArray(body.productIds)
         ? body.productIds.map(String)
         : undefined,
@@ -360,7 +382,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       productIds: ["medusa-product-id"],
       dryRun: false,
       sync: false,
+      reviewOnly:
+        "optional with regenerateApparelPlacements: collect all mockup candidates, no validation, no Medusa gallery",
       note: "Async by default — poll GET /floof/maintenance-jobs/:jobId",
+    },
+    applyGallery: {
+      maintenance: "applyGallery",
+      productId: "medusa-product-id",
+      imageUrls: ["https://…"],
+      note: "Sync only — replaces product gallery with exactly these URLs (rehosts via Printful when needed)",
     },
   })
 }

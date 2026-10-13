@@ -44,6 +44,15 @@ export type ApparelMockupShot = {
   option?: string
 }
 
+export type ApparelMockupReviewCandidate = {
+  url: string
+  optionGroup: string
+  view: string
+  option: string
+  placement: string
+  gender?: "male" | "female" | "neutral"
+}
+
 export type ApparelMockupPrintInput = {
   placement: string
   designSourceUrl: string
@@ -292,20 +301,24 @@ export async function generateApparelPlacementMockups(opts: {
   layout: ApparelPlacementLayout
   printFiles: ApparelMockupPrintInput[]
   log: (m: string) => void
+  /** Generate tasks and return every candidate; skip pixel validation and gallery selection. */
+  reviewOnly?: boolean
 }): Promise<{
   shots: ApparelMockupShot[]
   gallery: string[]
   validatedGallery: string[]
   hasValidatedMockups: boolean
   mockupTasks: MockupTaskRunLog[]
+  reviewCandidates: ApparelMockupReviewCandidate[]
 }> {
-  const { client, catalogProductId, variantIds, layout, log } = opts
+  const { client, catalogProductId, variantIds, layout, log, reviewOnly = false } = opts
   const vids = variantIds.slice(0, 2)
   const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 6)
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 3000)
   let shots: ApparelMockupShot[] = []
   const validatedShots: ApparelMockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
+  const reviewCandidates: ApparelMockupReviewCandidate[] = []
   let hasPassingFront = false
   let hasPassingBack = false
 
@@ -341,22 +354,6 @@ export async function generateApparelPlacementMockups(opts: {
       }
       for (const group of groups) {
         try {
-          const blankTask = await runBlankGarmentMockupTask({
-            client,
-            catalogProductId,
-            variantIds: vids,
-            placement,
-            group,
-            areaW,
-            areaH,
-            log,
-          })
-          const blankPoll = blankTask.pollResponse
-          if (!blankPoll) {
-            throw new ApparelMockupValidationError("Blank mockup task missing poll response")
-          }
-          const blankCandidates = extractMockupCandidatesFromTask(blankPoll, group, placement)
-
           const { taskLog } = await withPrintfulRetries(
             `Mockup ${placement} (${group})`,
             log,
@@ -378,6 +375,42 @@ export async function generateApparelPlacementMockups(opts: {
           if (!poll) {
             throw new ApparelMockupValidationError("Mockup task missing poll response")
           }
+
+          if (reviewOnly) {
+            const all = extractMockupCandidatesFromTask(poll, group, placement)
+            for (const c of all) {
+              reviewCandidates.push({
+                url: c.url,
+                optionGroup: c.optionGroup,
+                view: c.view,
+                option: c.option,
+                placement,
+                gender: batch.gender,
+              })
+            }
+            taskLog.validation = { unknown: true }
+            mockupTasks.push(taskLog)
+            log(
+              `reviewOnly: stored ${all.length} candidate(s) for placement=${placement} group=${group}`
+            )
+            continue
+          }
+
+          const blankTask = await runBlankGarmentMockupTask({
+            client,
+            catalogProductId,
+            variantIds: vids,
+            placement,
+            group,
+            areaW,
+            areaH,
+            log,
+          })
+          const blankPoll = blankTask.pollResponse
+          if (!blankPoll) {
+            throw new ApparelMockupValidationError("Blank mockup task missing poll response")
+          }
+          const blankCandidates = extractMockupCandidatesFromTask(blankPoll, group, placement)
 
           const allowed = selectMockupCandidatesForPlacement(poll, group, placement, layout)
           const designCandidate = pickPreferredMockupCandidate(allowed)
@@ -491,7 +524,7 @@ export async function generateApparelPlacementMockups(opts: {
     }
   }
 
-  if (layout === "chestPlusBack") {
+  if (!reviewOnly && layout === "chestPlusBack") {
     if (!hasPassingFront) {
       throw new ApparelMockupValidationError(
         "chestPlusBack requires at least one passing Front mockup with visible art"
@@ -501,6 +534,21 @@ export async function generateApparelPlacementMockups(opts: {
       throw new ApparelMockupValidationError(
         "chestPlusBack requires at least one passing Back mockup (or template fallback)"
       )
+    }
+  }
+
+  if (reviewOnly) {
+    if (!reviewCandidates.length) {
+      throw new ApparelMockupValidationError("reviewOnly: no mockup candidates were returned")
+    }
+    log(`reviewOnly: ${reviewCandidates.length} total mockup candidate(s) collected`)
+    return {
+      shots: [],
+      gallery: [],
+      validatedGallery: [],
+      hasValidatedMockups: false,
+      mockupTasks,
+      reviewCandidates,
     }
   }
 
@@ -532,5 +580,6 @@ export async function generateApparelPlacementMockups(opts: {
     validatedGallery,
     hasValidatedMockups,
     mockupTasks,
+    reviewCandidates: [],
   }
 }
