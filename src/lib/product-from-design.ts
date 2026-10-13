@@ -54,6 +54,12 @@ import {
 } from "./mug-design-source"
 import { MugWrapLayoutError, type MugWrapLayoutValidation } from "./mug-wrap-layout-guard"
 import { formatErrorMessage } from "./serialize-error"
+import {
+  buildMedusaVariantsFromPrintfulSync,
+  findMedusaProductForPrintfulImport,
+  findMedusaProductIdByVariantSku,
+  syncMedusaProductVariantsIdempotent,
+} from "./medusa-printful-variant-sync"
 import { MugWrapSourceRefusedError } from "./mug-wrap-source-art"
 import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene, sceneKeyFromMockupTitle } from "./mockup-scene-dedupe"
@@ -1029,42 +1035,36 @@ export async function importPrintfulProductToMedusa(
   const thumbnailUrl = gallery[0] || previewUrls[0] || syncProduct.thumbnail_url
   const images = gallery.length ? gallery : thumbnailUrl ? [thumbnailUrl] : []
 
-  // Prefer updating existing Medusa product (by printful id, handle, or SKU)
-  const productModule = container.resolve(Modules.PRODUCT)
-  const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const wantHandle = slugify(title)
-  const sampleSku = syncVariants[0] ? `PF-${syncVariants[0].id}` : null
-
-  let existingProduct: { id: string; handle: string; title: string } | null = null
-  try {
-    const { data: prods } = await query.graph({
-      entity: "product",
-      fields: ["id", "handle", "title", "metadata", "variants.sku"],
-    })
-    const match = (prods || []).find((p: any) => {
-      const mid = p.metadata?.printful_product_id
-      if (mid == printfulProductId || mid === String(printfulProductId)) return true
-      if (p.handle === wantHandle) return true
-      if (sampleSku && (p.variants || []).some((v: any) => v.sku === sampleSku)) return true
-      return false
-    })
-    if (match) {
-      existingProduct = { id: match.id, handle: match.handle, title: match.title }
-      log(`Found existing Medusa product ${match.handle} (${match.id})`)
-    }
-  } catch (e: any) {
-    log(`Product lookup via query failed: ${e.message}`)
-    const byHandle = await productModule.listProducts({ handle: wantHandle }, { take: 1 })
-    if (byHandle[0]) {
-      existingProduct = {
-        id: byHandle[0].id,
-        handle: byHandle[0].handle,
-        title: byHandle[0].title,
-      }
-    }
+  let existingProduct = await findMedusaProductForPrintfulImport(container, {
+    printfulProductId,
+    productHandle: wantHandle,
+    syncVariants,
+  })
+  if (existingProduct) {
+    log(`Found existing Medusa product ${existingProduct.handle} (${existingProduct.id})`)
   }
 
   let medusa: CreateFromDesignResult["medusa"] = null
+  const defaultRetail = syncVariants[0]?.retail_price || "28.00"
+
+  if (existingProduct) {
+    const syncStats = await syncMedusaProductVariantsIdempotent(
+      container,
+      existingProduct.id,
+      syncVariants,
+      defaultRetail,
+      log
+    )
+    log(
+      `Medusa variants synced (updated=${syncStats.updated}, created=${syncStats.created})`
+    )
+    medusa = {
+      productId: existingProduct.id,
+      handle: existingProduct.handle,
+      title: stripFloofProductTitle(existingProduct.title),
+    }
+  }
 
   const shouldUpdateGallery =
     existingProduct &&
@@ -1117,10 +1117,12 @@ export async function importPrintfulProductToMedusa(
           ],
         } as any,
       })
-      medusa = {
-        productId: existingProduct!.id,
-        handle: existingProduct!.handle,
-        title: cleanedTitle,
+      if (!medusa) {
+        medusa = {
+          productId: existingProduct!.id,
+          handle: existingProduct!.handle,
+          title: cleanedTitle,
+        }
       }
       log(`Updated product ${existingProduct!.handle}`)
     } catch (e: unknown) {
@@ -1129,6 +1131,35 @@ export async function importPrintfulProductToMedusa(
       throw new Error(
         `Found product ${existingProduct!.handle} but could not update images: ${msg}`
       )
+    }
+  }
+
+  if (!medusa) {
+    const sampleSku = syncVariants[0] ? `PF-${syncVariants[0].id}` : null
+    if (sampleSku) {
+      const productId = await findMedusaProductIdByVariantSku(container, sampleSku)
+      if (productId) {
+        log(`Found Medusa product by variant SKU ${sampleSku} → ${productId}`)
+        const syncStats = await syncMedusaProductVariantsIdempotent(
+          container,
+          productId,
+          syncVariants,
+          defaultRetail,
+          log
+        )
+        log(
+          `Medusa variants synced (updated=${syncStats.updated}, created=${syncStats.created})`
+        )
+        const productModule = container.resolve(Modules.PRODUCT)
+        const [p] = await productModule.listProducts({ id: productId }, { take: 1 })
+        if (p) {
+          medusa = {
+            productId: p.id,
+            handle: p.handle,
+            title: stripFloofProductTitle(p.title),
+          }
+        }
+      }
     }
   }
 
@@ -1444,57 +1475,52 @@ async function createMedusaProduct(
   }
   if (!channel) throw new Error("No sales channel — run seed first")
 
+  const { variants: built, sizes: sizeValues, colors: colorValues } =
+    buildMedusaVariantsFromPrintfulSync(opts.syncVariants, opts.retailPrice)
+
+  const firstSku = built[0]?.sku
+  if (firstSku) {
+    const existingProductId = await findMedusaProductIdByVariantSku(container, firstSku)
+    if (existingProductId) {
+      opts.log(
+        `Medusa product already has variant SKU ${firstSku} — syncing in place (${existingProductId})`
+      )
+      await syncMedusaProductVariantsIdempotent(
+        container,
+        existingProductId,
+        opts.syncVariants,
+        opts.retailPrice,
+        opts.log
+      )
+      const query = container.resolve(ContainerRegistrationKeys.QUERY)
+      const { data } = await query.graph({
+        entity: "product",
+        fields: ["id", "handle", "title"],
+        filters: { id: existingProductId },
+      })
+      const p = (data || [])[0] as { id: string; handle: string; title: string } | undefined
+      if (p) {
+        return { productId: p.id, handle: p.handle, title: p.title }
+      }
+    }
+  }
+
   let handle = slugify(opts.title)
   const existing = await productModule.listProducts({ handle }, { take: 1 })
   if (existing.length) {
     handle = `${handle}-${Date.now().toString(36)}`
   }
 
-  const sizeSet = new Set<string>()
-  const colorSet = new Set<string>()
-
-  const medusaVariants = opts.syncVariants.map((sv: any) => {
-    // Name format from Printful: "FLOOF — Title / Black / 2XL"
-    const nameParts = String(sv.name || "")
-      .split("/")
-      .map((s: string) => s.trim())
-    let size = "One Size"
-    let color = "Default"
-    if (nameParts.length >= 3) {
-      color = nameParts[nameParts.length - 2]
-      size = nameParts[nameParts.length - 1]
-    } else if (nameParts.length === 2) {
-      color = nameParts[0]
-      size = nameParts[1]
-    } else if (sv.product?.name) {
-      // "Bella + Canvas … (Black / 2XL)"
-      const m = String(sv.product.name).match(/\(([^/]+)\/([^)]+)\)/)
-      if (m) {
-        color = m[1].trim()
-        size = m[2].trim()
-      }
-    }
-
-    size = String(size).toUpperCase()
-    color = String(color)
-    sizeSet.add(size)
-    colorSet.add(color)
-
-    const amount = Math.round(parseFloat(sv.retail_price || opts.retailPrice || "0") * 100)
-
-    return {
-      title: `${size} / ${color}`,
-      sku: `PF-${sv.id}`,
-      options: { Size: size, Color: color },
-      prices: [{ amount, currency_code: "usd" }],
-      manage_inventory: false,
-      metadata: {
-        printful_sync_variant_id: sv.id,
-        printful_catalog_variant_id: sv.variant_id,
-        printful_external_id: sv.external_id,
-      },
-    }
-  })
+  const medusaVariants = built.map((v) => ({
+    title: v.title,
+    sku: v.sku,
+    options: v.options,
+    prices: v.prices,
+    manage_inventory: false,
+    metadata: v.metadata,
+  }))
+  const sizeSet = new Set(sizeValues)
+  const colorSet = new Set(colorValues)
 
   if (!medusaVariants.length) {
     throw new Error(
