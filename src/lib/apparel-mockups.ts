@@ -152,7 +152,12 @@ async function validateMockupAgainstMatchedBlank(
   blank: MockupImageCandidate,
   printPosition: ApparelPrintPosition,
   log: (m: string) => void
-): Promise<{ pixelDiffRatio: number; inBoxPixelDiffRatio: number; passed: boolean }> {
+): Promise<{
+  pixelDiffRatio: number
+  inBoxPixelDiffRatio: number
+  passThreshold: number
+  passed: boolean
+}> {
   log(
     `Mockup validation view=${design.view} option="${design.option}" ` +
       `blankOption="${blank.option}" design=${designUrl.slice(0, 64)}…`
@@ -169,6 +174,7 @@ async function validateMockupAgainstMatchedBlank(
   return {
     pixelDiffRatio: result.fullFrameRatio,
     inBoxPixelDiffRatio: result.inBoxRatio,
+    passThreshold: result.passThreshold,
     passed: result.passed,
   }
 }
@@ -438,6 +444,7 @@ export async function generateApparelPlacementMockups(opts: {
               taskLog.validation = {
                 pixelDiffRatio: validation.pixelDiffRatio,
                 inBoxPixelDiffRatio: validation.inBoxPixelDiffRatio,
+                inBoxPassThreshold: validation.passThreshold,
                 passed: validation.passed,
                 comparedToBlankUrl: blankMatch.url,
                 designOption: designCandidate.option,

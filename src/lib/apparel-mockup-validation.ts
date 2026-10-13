@@ -1,8 +1,5 @@
 import sharp from "sharp"
-import {
-  clampPrintPosition,
-  type ApparelPrintPosition,
-} from "./apparel-placement-layout"
+import { clampPrintPosition, type ApparelPrintPosition } from "./apparel-placement-layout"
 import { clampExtractRegion } from "./apparel-mockup-template-fallback"
 
 export type MockupPixelDiff = {
@@ -18,31 +15,83 @@ export type MockupImageRegion = {
   height: number
 }
 
-/** Map print placement box onto a lifestyle mockup (proportional + generous padding). */
-export function computeGenerousPlacementRegionOnMockup(
+export const MOCKUP_REGION_PADDING_FACTOR = 1.3
+
+/** Art box on mockup from 12″×16″ print-file coordinates (no full-frame padding). */
+export function computeArtBoxOnMockup(
   imageWidth: number,
   imageHeight: number,
-  printPosition: ApparelPrintPosition,
-  generousFraction = 0.4
+  printPosition: ApparelPrintPosition
 ): MockupImageRegion {
   const box = clampPrintPosition(printPosition)
   const iw = Math.max(1, imageWidth)
   const ih = Math.max(1, imageHeight)
-
-  let left = (box.left / box.area_width) * iw
-  let top = (box.top / box.area_height) * ih
-  let width = (box.width / box.area_width) * iw
-  let height = (box.height / box.area_height) * ih
-
-  const padX = Math.max(width * generousFraction, iw * 0.025)
-  const padY = Math.max(height * generousFraction, ih * 0.025)
-
   return clampExtractRegion(iw, ih, {
-    left: left - padX,
-    top: top - padY,
-    width: width + padX * 2,
-    height: height + padY * 2,
+    left: (box.left / box.area_width) * iw,
+    top: (box.top / box.area_height) * ih,
+    width: (box.width / box.area_width) * iw,
+    height: (box.height / box.area_height) * ih,
   })
+}
+
+/**
+ * Validation region: print box mapped from 12×16″ print area onto the mockup, × modest padding (~1.3).
+ */
+export function computeTightPlacementRegionOnMockup(
+  imageWidth: number,
+  imageHeight: number,
+  printPosition: ApparelPrintPosition,
+  paddingFactor = MOCKUP_REGION_PADDING_FACTOR
+): MockupImageRegion {
+  const art = computeArtBoxOnMockup(imageWidth, imageHeight, printPosition)
+  const padW = (art.width * (paddingFactor - 1)) / 2
+  const padH = (art.height * (paddingFactor - 1)) / 2
+  const iw = Math.max(1, imageWidth)
+  const ih = Math.max(1, imageHeight)
+  return clampExtractRegion(iw, ih, {
+    left: art.left - padW,
+    top: art.top - padH,
+    width: art.width + padW * 2,
+    height: art.height + padH * 2,
+  })
+}
+
+/** @deprecated use computeTightPlacementRegionOnMockup */
+export function computeGenerousPlacementRegionOnMockup(
+  imageWidth: number,
+  imageHeight: number,
+  printPosition: ApparelPrintPosition
+): MockupImageRegion {
+  return computeTightPlacementRegionOnMockup(imageWidth, imageHeight, printPosition)
+}
+
+/** Fraction of validation-region area covered by the art box (when region uses paddingFactor). */
+export function expectedArtAreaFractionInRegion(paddingFactor = MOCKUP_REGION_PADDING_FACTOR): number {
+  return 1 / (paddingFactor * paddingFactor)
+}
+
+/**
+ * Minimum in-box diff ratio to count as visible art.
+ * Scales with art size on the print file; tuned for prod logs (~1–2.7% left chest, blanks lower).
+ */
+export function computeInBoxPassThreshold(
+  printPosition: ApparelPrintPosition,
+  paddingFactor = MOCKUP_REGION_PADDING_FACTOR
+): number {
+  const box = clampPrintPosition(printPosition)
+  const artAreaOnPrintFile =
+    (box.width * box.height) / (box.area_width * box.area_height)
+  const artInRegion = expectedArtAreaFractionInRegion(paddingFactor)
+  const scaled = artAreaOnPrintFile * artInRegion * 0.18
+  return Math.max(0.0055, Math.min(0.04, scaled))
+}
+
+export function mockupInBoxDiffPasses(
+  inBoxRatio: number,
+  printPosition: ApparelPrintPosition,
+  paddingFactor = MOCKUP_REGION_PADDING_FACTOR
+): boolean {
+  return inBoxRatio >= computeInBoxPassThreshold(printPosition, paddingFactor)
 }
 
 function countPixelDiff(
@@ -134,7 +183,7 @@ export function mockupShowsDesign(diff: MockupPixelDiff, minRatio = 0.008): bool
   return diff.ratio >= minRatio
 }
 
-/** In-box diff threshold — small prints are a tiny fraction of the full frame. */
+/** @deprecated use mockupInBoxDiffPasses with print position */
 export function mockupShowsDesignInRegion(diff: MockupPixelDiff, minRatio = 0.04): boolean {
   return diff.ratio >= minRatio
 }
@@ -148,22 +197,25 @@ export async function validateMockupArtVisibility(
   fullFrameRatio: number
   inBoxRatio: number
   region: MockupImageRegion
+  passThreshold: number
 }> {
   const meta = await sharp(designBuf).metadata()
   const iw = meta.width || 1
   const ih = meta.height || 1
-  const region = computeGenerousPlacementRegionOnMockup(iw, ih, printPosition)
+  const region = computeTightPlacementRegionOnMockup(iw, ih, printPosition)
+  const passThreshold = computeInBoxPassThreshold(printPosition)
 
   const [full, inBox] = await Promise.all([
     mockupPixelDifference(designBuf, blankBuf),
     mockupPixelDifferenceInRegion(designBuf, blankBuf, region),
   ])
 
-  const passed = mockupShowsDesignInRegion(inBox)
+  const passed = mockupInBoxDiffPasses(inBox.ratio, printPosition)
   return {
     passed,
     fullFrameRatio: full.ratio,
     inBoxRatio: inBox.ratio,
     region,
+    passThreshold,
   }
 }
