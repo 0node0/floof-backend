@@ -4,35 +4,43 @@ import { fetchAndAssertSingleSidedDesignPng } from "./mug-design-source"
 import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
 import {
   buildApparelFullBleedPosition,
+  clampPrintPosition,
   type ApparelPrintPlacementSpec,
+  type ApparelPrintPosition,
 } from "./apparel-placement-layout"
 
 export type ApparelCompositedPrintFile = {
   placement: string
   syncFileType: string
-  position: Record<string, number>
-  mockupPosition: Record<string, number>
-  fileId: number
-  cdnUrl: string
+  position: ApparelPrintPosition
+  mockupPosition: ApparelPrintPosition
+  fileId?: number
+  cdnUrl?: string
 }
 
-async function compositeDesignIntoPrintArea(
+export async function compositeDesignIntoPrintArea(
   designPng: Buffer,
-  position: Record<string, number>
+  position: ApparelPrintPosition
 ): Promise<Buffer> {
-  const areaW = position.area_width
-  const areaH = position.area_height
-  const boxW = position.width
-  const boxH = position.height
+  const box = clampPrintPosition(position)
+  const areaW = box.area_width
+  const areaH = box.area_height
+  const boxW = box.width
+  const boxH = box.height
   const meta = await sharp(designPng).metadata()
   const srcW = Math.max(1, meta.width || 1)
   const srcH = Math.max(1, meta.height || 1)
-  const scale = Math.min(boxW / srcW, boxH / srcH)
-  const w = Math.max(1, Math.round(srcW * scale))
-  const h = Math.max(1, Math.round(srcH * scale))
-  const resized = await sharp(designPng).resize(w, h, { fit: "inside" }).png().toBuffer()
-  const left = position.left + Math.round((boxW - w) / 2)
-  const top = position.top + Math.round((boxH - h) / 2)
+  const scale = Math.min(boxW / srcW, boxH / srcH, 1)
+  const w = Math.max(1, Math.min(Math.round(srcW * scale), areaW))
+  const h = Math.max(1, Math.min(Math.round(srcH * scale), areaH))
+  const resized = await sharp(designPng)
+    .resize(w, h, { fit: "inside", withoutEnlargement: false })
+    .png()
+    .toBuffer()
+  let left = box.left + Math.round((boxW - w) / 2)
+  let top = box.top + Math.round((boxH - h) / 2)
+  left = Math.max(0, Math.min(left, areaW - w))
+  top = Math.max(0, Math.min(top, areaH - h))
 
   return sharp({
     create: {
@@ -51,33 +59,45 @@ export async function buildApparelPrintFilesForPlacements(
   client: PrintfulApiClient,
   designUrl: string,
   placements: ApparelPrintPlacementSpec[],
-  log?: (m: string) => void
+  log?: (m: string) => void,
+  opts?: { dryRun?: boolean }
 ): Promise<ApparelCompositedPrintFile[]> {
-  const designPng = await fetchAndAssertSingleSidedDesignPng(designUrl, log)
+  const designPng = opts?.dryRun
+    ? null
+    : await fetchAndAssertSingleSidedDesignPng(designUrl, log)
   const results: ApparelCompositedPrintFile[] = []
 
   for (const spec of placements) {
-    const compositePng = await compositeDesignIntoPrintArea(designPng, spec.position)
+    const position = clampPrintPosition(spec.position)
+    const mockupPosition = buildApparelFullBleedPosition(position.area_width, position.area_height)
+
+    if (opts?.dryRun) {
+      results.push({
+        placement: spec.placement,
+        syncFileType: spec.syncFileType,
+        position,
+        mockupPosition,
+      })
+      continue
+    }
+
+    const compositePng = await compositeDesignIntoPrintArea(designPng!, position)
     const uploaded = await uploadPngToPrintfulFileLibrary(
       client,
       compositePng,
-      `apparel-${spec.placement}-${spec.position.area_width}x${spec.position.area_height}.png`,
+      `apparel-${spec.placement}-${position.area_width}x${position.area_height}.png`,
       log
-    )
-    const mockupPosition = buildApparelFullBleedPosition(
-      spec.position.area_width,
-      spec.position.area_height
     )
     results.push({
       placement: spec.placement,
       syncFileType: spec.syncFileType,
-      position: spec.position,
+      position,
       mockupPosition,
       fileId: uploaded.fileId,
       cdnUrl: uploaded.cdnUrl,
     })
     log?.(
-      `Apparel print file ${spec.placement}: fileId=${uploaded.fileId} artBox=${JSON.stringify(spec.position)}`
+      `Apparel print file ${spec.placement}: fileId=${uploaded.fileId} box=${JSON.stringify(position)}`
     )
   }
 
