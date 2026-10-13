@@ -10,8 +10,8 @@ export function isBlockedMugMockupOptionGroup(group: string): boolean {
   return false
 }
 
-/** Preferred neutral mug lifestyle scenes (woman holding, handheld close-up, …). */
-const PREFERRED_ORDER = ["lifestyle", "lifestyle 2", "lifestyle 1"]
+/** Task order: handheld close-up first, then woman holding, then extras. */
+const PREFERRED_ORDER = ["lifestyle 2", "lifestyle", "lifestyle 1"]
 
 function rankGroup(group: string): number {
   const key = group.trim().toLowerCase()

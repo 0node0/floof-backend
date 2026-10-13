@@ -5,6 +5,7 @@
 
 import type PrintfulApiClient from "../modules/printful/client"
 import { filterDrinkwareMockupOptionGroups } from "./mug-mockup-scenes"
+import { drinkwareGallerySortScore } from "./mug-mockup-scene-runner"
 
 export type PrintfileInfo = {
   printfile_id?: number
@@ -436,16 +437,9 @@ export function buildDrinkwareLifestyleGallery(
   shots: MockupShotLike[],
   extras: string[] = []
 ): string[] {
-  const score = (title?: string) => {
-    const t = title || ""
-    const m = /lifestyle\s*(\d+)?/i.exec(t)
-    if (m) return m[1] ? parseInt(m[1], 10) : 1
-    if (/lifestyle/i.test(t)) return 1
-    if (/flat/i.test(t)) return 100
-    return 50
-  }
-
-  const sorted = [...shots].sort((a, b) => score(a.title) - score(b.title))
+  const sorted = [...shots].sort(
+    (a, b) => drinkwareGallerySortScore(a.title) - drinkwareGallerySortScore(b.title)
+  )
   const urls: string[] = []
   const seenScene = new Set<string>()
   const push = (u?: string, sceneKey?: string) => {

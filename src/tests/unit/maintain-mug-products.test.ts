@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest"
-import { looksLikeMug } from "../../lib/maintain-mug-products"
+import { countProductGalleryImages, looksLikeMug } from "../../lib/maintain-mug-products"
 
 describe("maintain-mug-products", () => {
+  it("counts unique gallery URLs", () => {
+    expect(countProductGalleryImages({ images: [{ url: "a" }, { url: "a" }] })).toBe(1)
+    expect(countProductGalleryImages({ images: [{ url: "a" }, { url: "b" }] })).toBe(2)
+  })
+
   it("detects mugs by title and metadata", () => {
     expect(looksLikeMug({ title: "Ceramic Mug", handle: "ceramic-mug" })).toBe(true)
     expect(looksLikeMug({ title: "Humidity Club", handle: "humidity-club" })).toBe(false)

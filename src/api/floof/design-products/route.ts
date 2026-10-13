@@ -61,6 +61,12 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       productIds: Array.isArray(body.productIds)
         ? body.productIds.map(String)
         : undefined,
+      onlyIfGalleryImagesBelow:
+        body.onlySparseGalleries === true || body.onlySparseGalleries === "true"
+          ? 2
+          : body.onlyIfGalleryImagesBelow != null
+            ? Number(body.onlyIfGalleryImagesBelow)
+            : undefined,
     }
     const runSync = body.sync === true || body.sync === "true" || body.async === false
 
@@ -251,6 +257,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       dryRun: false,
       productIds: ["optional-medusa-product-id"],
       sync: false,
+      onlySparseGalleries: true,
+      onlyIfGalleryImagesBelow: 2,
       note: "Default async — returns jobId; poll GET /floof/maintenance-jobs/:jobId",
     },
   })

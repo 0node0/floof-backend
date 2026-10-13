@@ -18,6 +18,6 @@ describe("mug-mockup-scenes", () => {
       "Lifestyle 3",
       "Flat",
     ])
-    expect(groups).toEqual(["Lifestyle", "Lifestyle 2"])
+    expect(groups).toEqual(["Lifestyle 2", "Lifestyle"])
   })
 })

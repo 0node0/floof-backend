@@ -42,7 +42,13 @@ import {
   resolveDurablePrintfulDesignUrl,
 } from "./printful-design-url"
 import { sleep as delay } from "./async-sleep"
-import { dedupeMockupShotsByScene } from "./mockup-scene-dedupe"
+import { dedupeMockupShotsByScene, sceneKeyFromMockupTitle } from "./mockup-scene-dedupe"
+import {
+  buildSceneResult,
+  countSuccessfulScenes,
+  type MugMockupSceneResult,
+} from "./mug-mockup-scene-runner"
+import { filterDrinkwareMockupOptionGroups } from "./mug-mockup-scenes"
 import {
   runPrintfulMockupTask,
   type MockupTaskRunLog,
@@ -140,6 +146,7 @@ export type CreateFromDesignResult = {
     title: string
   } | null
   mockupTasks?: MockupTaskRunLog[]
+  mockupScenes?: MugMockupSceneResult[]
   mockupSkipReason?: string
   syncVariantFiles?: SyncVariantFileReport[]
   imagesChanged?: boolean
@@ -295,6 +302,157 @@ async function runMockupTask(
   return { shots, taskLog }
 }
 
+const MIN_DRINKWARE_SCENES = 2
+const TARGET_DRINKWARE_SCENES = 3
+
+async function runOneDrinkwareScene(
+  client: PrintfulApiClient,
+  catalogProductId: number,
+  vids: number[],
+  mockupDesignUrl: string,
+  placement: string,
+  mockupPosition: Record<string, number>,
+  group: string,
+  gender: "male" | "female" | "neutral",
+  log: (m: string) => void,
+  taskRetries: number,
+  taskGapMs: number
+): Promise<{ shots: MockupShot[]; taskLog?: MockupTaskRunLog; scene: MugMockupSceneResult }> {
+  let lastShots: MockupShot[] = []
+  let lastTask: MockupTaskRunLog | undefined
+  let lastError = "unknown"
+  for (let attempt = 1; attempt <= taskRetries; attempt++) {
+    if (attempt > 1) {
+      const wait = taskGapMs * attempt
+      log(`Scene ${group}: retry ${attempt}/${taskRetries} in ${wait}ms (${lastError})`)
+      await delay(wait)
+    }
+    try {
+      const { shots, taskLog } = await runMockupTask(
+        client,
+        catalogProductId,
+        vids,
+        mockupDesignUrl,
+        placement,
+        mockupPosition,
+        [group],
+        log,
+        gender,
+        true
+      )
+      lastShots = shots
+      lastTask = taskLog
+      const scene = buildSceneResult(group, attempt, taskLog, shots)
+      if (scene.success) return { shots, taskLog, scene }
+      lastError = scene.error || "scene failed"
+    } catch (e: unknown) {
+      lastError = e instanceof Error ? e.message : String(e)
+      log(`Scene ${group} attempt ${attempt} threw: ${lastError}`)
+    }
+  }
+  return {
+    shots: lastShots,
+    taskLog: lastTask,
+    scene: buildSceneResult(group, taskRetries, lastTask, lastShots),
+  }
+}
+
+async function runDrinkwareMockupScenes(opts: {
+  client: PrintfulApiClient
+  catalogProductId: number
+  vids: number[]
+  mockupDesignUrl: string
+  placement: string
+  mockupPosition: Record<string, number>
+  sceneGroups: string[]
+  optionGroupsAvailable: string[]
+  log: (m: string) => void
+  taskRetries: number
+  taskGapMs: number
+}): Promise<{
+  shots: MockupShot[]
+  mockupTasks: MockupTaskRunLog[]
+  mockupScenes: MugMockupSceneResult[]
+}> {
+  const {
+    client,
+    catalogProductId,
+    vids,
+    mockupDesignUrl,
+    placement,
+    mockupPosition,
+    log,
+    taskRetries,
+    taskGapMs,
+  } = opts
+
+  let groupsToRun = [...opts.sceneGroups]
+  const mockupTasks: MockupTaskRunLog[] = []
+  const mockupScenes: MugMockupSceneResult[] = []
+  let shots: MockupShot[] = []
+  let taskIndex = 0
+
+  const runGroup = async (group: string) => {
+    if (taskIndex > 0) await delay(taskGapMs)
+    taskIndex++
+    const result = await runOneDrinkwareScene(
+      client,
+      catalogProductId,
+      vids,
+      mockupDesignUrl,
+      placement,
+      mockupPosition,
+      group,
+      "neutral",
+      log,
+      taskRetries,
+      taskGapMs
+    )
+    if (result.taskLog) mockupTasks.push(result.taskLog)
+    const prior = mockupScenes.findIndex((s) => s.optionGroup === group)
+    if (prior >= 0) mockupScenes[prior] = result.scene
+    else mockupScenes.push(result.scene)
+    if (result.shots.length) {
+      shots = shots.filter(
+        (s) => sceneKeyFromMockupTitle(s.title) !== result.scene.sceneKey
+      )
+      shots = shots.concat(result.shots)
+    }
+    return result.scene.success
+  }
+
+  for (const group of groupsToRun) {
+    await runGroup(group)
+  }
+
+  let rounds = 0
+  const maxExtraRounds = Number(process.env.MUG_MOCKUP_SCENE_EXTRA_ROUNDS || 2)
+  while (
+    countSuccessfulScenes(mockupScenes) < MIN_DRINKWARE_SCENES &&
+    rounds < maxExtraRounds
+  ) {
+    rounds++
+    const failed = mockupScenes.filter((s) => !s.success).map((s) => s.optionGroup)
+    const extra = filterDrinkwareMockupOptionGroups(opts.optionGroupsAvailable, TARGET_DRINKWARE_SCENES).filter(
+      (g) => !mockupScenes.some((s) => s.optionGroup === g)
+    )
+    const retryGroups = [...new Set([...failed, ...extra])]
+    if (!retryGroups.length) break
+    log(
+      `Drinkware scenes=${countSuccessfulScenes(mockupScenes)} — extra round ${rounds} for: ${retryGroups.join(", ")}`
+    )
+    await delay(taskGapMs * (rounds + 1))
+    for (const group of retryGroups) {
+      if (countSuccessfulScenes(mockupScenes) >= TARGET_DRINKWARE_SCENES) break
+      const existing = mockupScenes.find((s) => s.optionGroup === group && s.success)
+      if (existing) continue
+      await runGroup(group)
+    }
+  }
+
+  return { shots, mockupTasks, mockupScenes }
+}
+
 /** Generate male + female lifestyle mockups; return curated 7-image gallery. */
 export async function generateLifestyleMockups(opts: {
   client: PrintfulApiClient
@@ -308,10 +466,12 @@ export async function generateLifestyleMockups(opts: {
   shots: MockupShot[]
   gallery: string[]
   mockupTasks: MockupTaskRunLog[]
+  mockupScenes?: MugMockupSceneResult[]
   mockupSkipReason?: string
 }> {
   const { client, catalogProductId, variantIds, designUrl, log } = opts
   let placement = "front"
+  let optionGroupsAvailable: string[] = []
   let productKind: MockupProductKind = "apparel"
   let position: Record<string, number> = {
     area_width: 1800,
@@ -334,6 +494,7 @@ export async function generateLifestyleMockups(opts: {
     position = mockupConfig.position
     productKind = mockupConfig.productKind
     batches = mockupConfig.batches
+    optionGroupsAvailable = mockupConfig.optionGroupsAvailable
     log(
       `Mockup kind=${productKind} placement=${placement}; position=${JSON.stringify(position)}`
     )
@@ -389,7 +550,8 @@ export async function generateLifestyleMockups(opts: {
 
   const vids = variantIds.slice(0, 2)
   let shots: MockupShot[] = []
-  const mockupTasks: MockupTaskRunLog[] = []
+  let mockupTasks: MockupTaskRunLog[] = []
+  let mockupScenes: MugMockupSceneResult[] = []
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
   const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3)
   let taskIndex = 0
@@ -424,41 +586,69 @@ export async function generateLifestyleMockups(opts: {
     }
   }
 
-  for (const batch of batches) {
-    for (const group of batch.optionGroups.filter(Boolean)) {
-      if (productKind === "drinkware" && !drinkwareWrapReady) {
-        continue
-      }
-      if (taskIndex > 0) {
-        await delay(taskGapMs)
-      }
-      taskIndex++
-      try {
-        const { shots: batchShots, taskLog } = await withThrottledRetries(
-          `Mockup task (${group})`,
-          log,
-          () =>
-            runMockupTask(
-              client,
-              catalogProductId,
-              vids,
-              mockupDesignUrl,
-              placement,
-              mockupPosition,
-              [group],
-              log,
-              batch.gender,
-              productKind === "drinkware"
-            ),
-          taskRetries,
-          taskGapMs
-        )
-        shots = shots.concat(batchShots)
-        if (taskLog) mockupTasks.push(taskLog)
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
-        skipReasons.push(`task ${group}: ${msg}`)
-        log(`Mockup task failed (${group}): ${msg}`)
+  if (productKind === "drinkware" && drinkwareWrapReady) {
+    const sceneGroups = batches.flatMap((b) => b.optionGroups).filter(Boolean)
+    const drinkwareResult = await runDrinkwareMockupScenes({
+      client,
+      catalogProductId,
+      vids,
+      mockupDesignUrl,
+      placement,
+      mockupPosition,
+      sceneGroups,
+      optionGroupsAvailable,
+      log,
+      taskRetries,
+      taskGapMs,
+    })
+    shots = drinkwareResult.shots
+    mockupTasks = drinkwareResult.mockupTasks
+    mockupScenes = drinkwareResult.mockupScenes
+    for (const scene of mockupScenes.filter((s) => !s.success)) {
+      skipReasons.push(`${scene.optionGroup}: ${scene.error || "failed"}`)
+    }
+    if (countSuccessfulScenes(mockupScenes) < MIN_DRINKWARE_SCENES) {
+      skipReasons.push(
+        `only ${countSuccessfulScenes(mockupScenes)} scene(s) succeeded (need ${MIN_DRINKWARE_SCENES})`
+      )
+    }
+  } else {
+    for (const batch of batches) {
+      for (const group of batch.optionGroups.filter(Boolean)) {
+        if (productKind === "drinkware" && !drinkwareWrapReady) {
+          continue
+        }
+        if (taskIndex > 0) {
+          await delay(taskGapMs)
+        }
+        taskIndex++
+        try {
+          const { shots: batchShots, taskLog } = await withThrottledRetries(
+            `Mockup task (${group})`,
+            log,
+            () =>
+              runMockupTask(
+                client,
+                catalogProductId,
+                vids,
+                mockupDesignUrl,
+                placement,
+                mockupPosition,
+                [group],
+                log,
+                batch.gender,
+                productKind === "drinkware"
+              ),
+            taskRetries,
+            taskGapMs
+          )
+          shots = shots.concat(batchShots)
+          if (taskLog) mockupTasks.push(taskLog)
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e)
+          skipReasons.push(`task ${group}: ${msg}`)
+          log(`Mockup task failed (${group}): ${msg}`)
+        }
       }
     }
   }
@@ -489,7 +679,7 @@ export async function generateLifestyleMockups(opts: {
     log(`No mockup tasks completed: ${mockupSkipReason}`)
   }
 
-  return { shots: permanized, gallery, mockupTasks, mockupSkipReason }
+  return { shots: permanized, gallery, mockupTasks, mockupScenes, mockupSkipReason }
 }
 
 /** Exact color match (case-insensitive), with light aliases */
@@ -581,6 +771,7 @@ export async function importPrintfulProductToMedusa(
   let mockups: MockupShot[] = []
   let gallery: string[] = []
   let mockupTasks: MockupTaskRunLog[] = []
+  let mockupScenes: MugMockupSceneResult[] = []
   let mockupSkipReason: string | undefined
   let syncVariantFiles: SyncVariantFileReport[] = []
   let imagesChanged = false
@@ -677,9 +868,16 @@ export async function importPrintfulProductToMedusa(
         drinkwareWrapFile: drinkwareWrap,
         log,
       })
-      if (!result.mockupTasks.length && result.mockupSkipReason) {
+      const sceneCount = countSuccessfulScenes(result.mockupScenes || [])
+      const needsRetry =
+        !result.mockupTasks.length ||
+        sceneCount < MIN_DRINKWARE_SCENES ||
+        Boolean(result.mockupSkipReason)
+      if (needsRetry && mockupProductKind === "drinkware") {
         const retryWait = Number(process.env.MUG_MOCKUP_REGEN_RETRY_MS || 8000)
-        log(`Retrying mockup tasks in ${retryWait}ms (${result.mockupSkipReason})`)
+        log(
+          `Retrying drinkware mockup scenes in ${retryWait}ms (scenes=${sceneCount}, tasks=${result.mockupTasks.length}, reason=${result.mockupSkipReason || "n/a"})`
+        )
         await delay(retryWait)
         result = await generateLifestyleMockups({
           client,
@@ -692,6 +890,7 @@ export async function importPrintfulProductToMedusa(
       }
       mockups = result.shots
       mockupTasks = result.mockupTasks
+      mockupScenes = result.mockupScenes || []
       mockupSkipReason = result.mockupSkipReason
 
       if (mockupProductKind === "drinkware") {
@@ -845,6 +1044,7 @@ export async function importPrintfulProductToMedusa(
     gallery: images,
     medusa,
     mockupTasks,
+    mockupScenes,
     mockupSkipReason,
     syncVariantFiles,
     imagesChanged,
