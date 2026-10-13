@@ -6,6 +6,10 @@ import {
 } from "./mug-wrap-composite"
 import { resolveSingleSidedArtPngForWrap } from "./mug-wrap-source-art"
 import {
+  MugWrapLayoutError,
+  validateMugWrapLayout,
+} from "./mug-wrap-layout-guard"
+import {
   uploadPngToPrintfulFileLibrary,
   type PrintfulUploadedFile,
 } from "./printful-file-upload"
@@ -35,6 +39,13 @@ export async function createDrinkwareWrapPrintfulFile(
   )
   const designPng = await resolveSingleSidedArtPngForWrap(designUrl, dims, log)
   const wrapPng = await compositeMugWrapPng(designPng, dims)
+  const layout = await validateMugWrapLayout(wrapPng, dims)
+  if (!layout.ok) {
+    throw new MugWrapLayoutError(layout)
+  }
+  log?.(
+    `Mug wrap layout OK (L ink h=${layout.leftInkHeight}, R ink h=${layout.rightInkHeight})`
+  )
   const uploaded = await uploadPngToPrintfulFileLibrary(
     client,
     wrapPng,

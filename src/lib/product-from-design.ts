@@ -41,10 +41,15 @@ import {
   isEphemeralFloofDesignUrl,
   resolveDurablePrintfulDesignUrl,
 } from "./printful-design-url"
+import { readMugWrapDimensionsFromPosition } from "./mug-wrap-composite"
 import {
-  readMugWrapDimensionsFromPosition,
-} from "./mug-wrap-composite"
-import { resolveMugWrapSourceDesignUrl } from "./mug-wrap-source-art"
+  DESIGN_SOURCE_FILE_ID_META,
+  DESIGN_SOURCE_URL_META,
+  resolveMugDesignSource,
+  type MugDesignSourceResolution,
+} from "./mug-design-source"
+import { MugWrapLayoutError } from "./mug-wrap-layout-guard"
+import { MugWrapSourceRefusedError } from "./mug-wrap-source-art"
 import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene, sceneKeyFromMockupTitle } from "./mockup-scene-dedupe"
 import {
@@ -739,6 +744,11 @@ export async function importPrintfulProductToMedusa(
     description?: string
     regenerateMockups?: boolean
     catalogProductId?: number
+    medusaProductId?: string
+    medusaHandle?: string
+    medusaMetadata?: Record<string, unknown>
+    /** Per-job override: original single-sided design URL (not wrap) */
+    sourceUrlOverride?: string
   }
 ): Promise<CreateFromDesignResult> {
   const logs: string[] = []
@@ -802,6 +812,10 @@ export async function importPrintfulProductToMedusa(
     }
   }
 
+  const medusaHandleForSource = opts?.medusaHandle || slugify(title)
+  let mugDesignSourceResolution: MugDesignSourceResolution | undefined
+  let designSourceBackfill: MugDesignSourceResolution["backfillMetadata"]
+
   const resolveDesign = async (): Promise<string | undefined> => {
     const useMugSource =
       opts?.regenerateMockups &&
@@ -809,13 +823,24 @@ export async function importPrintfulProductToMedusa(
       (isMugCatalogProductId(Number(catalogProductId)) ||
         preloadedMockupConfig.productKind === "drinkware")
     if (useMugSource && preloadedMockupConfig) {
-      const dims = readMugWrapDimensionsFromPosition(preloadedMockupConfig.position)
-      const mugSource = await resolveMugWrapSourceDesignUrl(client, syncVariants, dims, {
-        thumbnailUrl: syncProduct.thumbnail_url,
-        fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
+      mugDesignSourceResolution = await resolveMugDesignSource(client, {
+        medusaProductId:
+          opts?.medusaProductId || `printful-sync-${printfulProductId}`,
+        title,
+        handle: medusaHandleForSource,
+        phrase,
+        metadata: opts?.medusaMetadata,
+        sourceUrlOverride: opts?.sourceUrlOverride,
         log,
       })
-      if (mugSource) return mugSource
+      if (!mugDesignSourceResolution) {
+        mockupSkipReason =
+          "no original mug design source (set metadata designSourceFileId, sourceUrls, or file library match)"
+        log(`No mockup tasks: ${mockupSkipReason}`)
+        return undefined
+      }
+      designSourceBackfill = mugDesignSourceResolution.backfillMetadata
+      return mugDesignSourceResolution.url
     }
     return resolveDurablePrintfulDesignUrl(client, syncVariants, {
       thumbnailUrl: syncProduct.thumbnail_url,
@@ -834,7 +859,7 @@ export async function importPrintfulProductToMedusa(
 
   let mockupProductKind: MockupProductKind = "other"
   if (opts?.regenerateMockups) {
-    if (!designUrl) {
+    if (!designUrl && !mockupSkipReason) {
       mockupSkipReason = "no durable Printful design URL on sync variants"
       log(`No mockup tasks: ${mockupSkipReason}`)
     } else if (isEphemeralFloofDesignUrl(designUrl)) {
@@ -856,66 +881,63 @@ export async function importPrintfulProductToMedusa(
 
       let drinkwareWrap: DrinkwareWrapFile | undefined
       if (mockupProductKind === "drinkware") {
-        drinkwareWrap = await withThrottledRetries(
-          "Drinkware wrap + sync variant file",
-          log,
-          async () => {
-            const wrap = await createDrinkwareWrapPrintfulFile(
-              client,
-              designUrl,
-              mockupConfig.position,
-              log
-            )
-            await updateSyncVariantsPrintFile(
-              client,
-              printfulProductId,
-              syncVariants,
-              wrap.fileId,
-              mockupConfig.syncFileType || "default",
-              log
-            )
-            return wrap
-          },
-          Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3),
-          2500
-        )
-        const refreshed = await client.get<any>(`/store/products/${printfulProductId}`)
-        const refreshedVariants: any[] = refreshed.sync_variants || syncVariants
-        syncVariantFiles = buildSyncVariantFileReports(
-          refreshedVariants,
-          drinkwareWrap.fileId,
-          mockupConfig.syncFileType || "default"
-        )
-        log(
-          `Sync variant files: ${syncVariantFiles
-            .map(
-              (v) =>
-                `#${v.syncVariantId} file=${v.printfulFileId} match=${v.compositeFileMatches}`
-            )
-            .join(", ")}`
-        )
+        try {
+          drinkwareWrap = await withThrottledRetries(
+            "Drinkware wrap + sync variant file",
+            log,
+            async () => {
+              const wrap = await createDrinkwareWrapPrintfulFile(
+                client,
+                designUrl,
+                mockupConfig.position,
+                log
+              )
+              await updateSyncVariantsPrintFile(
+                client,
+                printfulProductId,
+                syncVariants,
+                wrap.fileId,
+                mockupConfig.syncFileType || "default",
+                log
+              )
+              return wrap
+            },
+            Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3),
+            2500
+          )
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : String(e)
+          if (e instanceof MugWrapSourceRefusedError || e instanceof MugWrapLayoutError) {
+            mockupSkipReason = msg
+            log(`Mug wrap aborted (variant/gallery unchanged): ${msg}`)
+          } else {
+            throw e
+          }
+        }
+        if (drinkwareWrap) {
+          const refreshed = await client.get<any>(`/store/products/${printfulProductId}`)
+          const refreshedVariants: any[] = refreshed.sync_variants || syncVariants
+          syncVariantFiles = buildSyncVariantFileReports(
+            refreshedVariants,
+            drinkwareWrap.fileId,
+            mockupConfig.syncFileType || "default"
+          )
+          log(
+            `Sync variant files: ${syncVariantFiles
+              .map(
+                (v) =>
+                  `#${v.syncVariantId} file=${v.printfulFileId} match=${v.compositeFileMatches}`
+              )
+              .join(", ")}`
+          )
+        }
       }
 
-      let result = await generateLifestyleMockups({
-        client,
-        catalogProductId: Number(catalogProductId),
-        variantIds,
-        designUrl,
-        drinkwareWrapFile: drinkwareWrap,
-        log,
-      })
-      const sceneCount = countSuccessfulScenes(result.mockupScenes || [])
-      const needsRetry =
-        !result.mockupTasks.length ||
-        sceneCount < MIN_DRINKWARE_SCENES ||
-        Boolean(result.mockupSkipReason)
-      if (needsRetry && mockupProductKind === "drinkware") {
-        const retryWait = Number(process.env.MUG_MOCKUP_REGEN_RETRY_MS || 8000)
-        log(
-          `Retrying drinkware mockup scenes in ${retryWait}ms (scenes=${sceneCount}, tasks=${result.mockupTasks.length}, reason=${result.mockupSkipReason || "n/a"})`
-        )
-        await delay(retryWait)
-        result = await generateLifestyleMockups({
+      let lifestyleGallery: string[] = []
+      if (mockupProductKind === "drinkware" && !drinkwareWrap) {
+        log("Skipping drinkware mockups — mug wrap was not built (source/layout guard)")
+      } else {
+        let result = await generateLifestyleMockups({
           client,
           catalogProductId: Number(catalogProductId),
           variantIds,
@@ -923,11 +945,32 @@ export async function importPrintfulProductToMedusa(
           drinkwareWrapFile: drinkwareWrap,
           log,
         })
+        const sceneCount = countSuccessfulScenes(result.mockupScenes || [])
+        const needsRetry =
+          !result.mockupTasks.length ||
+          sceneCount < MIN_DRINKWARE_SCENES ||
+          Boolean(result.mockupSkipReason)
+        if (needsRetry && mockupProductKind === "drinkware") {
+          const retryWait = Number(process.env.MUG_MOCKUP_REGEN_RETRY_MS || 8000)
+          log(
+            `Retrying drinkware mockup scenes in ${retryWait}ms (scenes=${sceneCount}, tasks=${result.mockupTasks.length}, reason=${result.mockupSkipReason || "n/a"})`
+          )
+          await delay(retryWait)
+          result = await generateLifestyleMockups({
+            client,
+            catalogProductId: Number(catalogProductId),
+            variantIds,
+            designUrl,
+            drinkwareWrapFile: drinkwareWrap,
+            log,
+          })
+        }
+        mockups = result.shots
+        mockupTasks = result.mockupTasks
+        mockupScenes = result.mockupScenes || []
+        mockupSkipReason = result.mockupSkipReason
+        lifestyleGallery = result.gallery
       }
-      mockups = result.shots
-      mockupTasks = result.mockupTasks
-      mockupScenes = result.mockupScenes || []
-      mockupSkipReason = result.mockupSkipReason
 
       if (mockupProductKind === "drinkware") {
         gallery = buildMugProductGallery(
@@ -936,7 +979,7 @@ export async function importPrintfulProductToMedusa(
           previewUrls.filter((u) => isStockCatalogImageUrl(u))
         )
       } else {
-        gallery = result.gallery
+        gallery = lifestyleGallery
       }
       log(`Regenerated gallery (${gallery.length} urls): ${gallery.join(" | ")}`)
       if (!mockupTasks.length && mockupSkipReason) {
@@ -1033,6 +1076,18 @@ export async function importPrintfulProductToMedusa(
                 category,
                 phrase,
                 design_pipeline: "product-from-design",
+                ...(designSourceBackfill?.designSourceFileId != null
+                  ? { [DESIGN_SOURCE_FILE_ID_META]: designSourceBackfill.designSourceFileId }
+                  : {}),
+                ...(designSourceBackfill?.designSourceUrl
+                  ? { [DESIGN_SOURCE_URL_META]: designSourceBackfill.designSourceUrl }
+                  : {}),
+                ...(mugDesignSourceResolution?.fileId != null
+                  ? { [DESIGN_SOURCE_FILE_ID_META]: mugDesignSourceResolution.fileId }
+                  : {}),
+                ...(mugDesignSourceResolution?.url
+                  ? { [DESIGN_SOURCE_URL_META]: mugDesignSourceResolution.url }
+                  : {}),
               },
             },
           ],
@@ -1295,6 +1350,8 @@ export async function createProductFromDesign(
         syncVariants,
         retailPrice,
         printfulProductId: syncProductId,
+        designSourceFileId: fileId,
+        designSourceUrl: fileUrl,
         status: input.draft ? "draft" : "published",
         styleHandle: input.style,
         log,
@@ -1333,6 +1390,8 @@ async function createMedusaProduct(
     syncVariants: any[]
     retailPrice: string
     printfulProductId: number
+    designSourceFileId?: number
+    designSourceUrl?: string
     status?: "draft" | "published"
     styleHandle?: string
     log: (m: string) => void
@@ -1424,6 +1483,12 @@ async function createMedusaProduct(
       category: opts.category,
       phrase: opts.phrase,
       design_pipeline: "product-from-design",
+      ...(opts.designSourceFileId != null
+        ? { [DESIGN_SOURCE_FILE_ID_META]: opts.designSourceFileId }
+        : {}),
+      ...(opts.designSourceUrl
+        ? { [DESIGN_SOURCE_URL_META]: opts.designSourceUrl }
+        : {}),
     },
     images: opts.images.slice(0, 10).map((url) => ({ url })),
     thumbnail: opts.thumbnailUrl,

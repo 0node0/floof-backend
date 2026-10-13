@@ -1,6 +1,7 @@
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
+import { resolveSourceUrlFromMap } from "./mug-design-source"
 import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
@@ -24,6 +25,8 @@ export type MaintainMugProductsInput = {
    * Use `2` to target mugs stuck with a single lifestyle shot.
    */
   onlyIfGalleryImagesBelow?: number
+  /** Original single-sided design URLs keyed by Medusa product id or handle */
+  sourceUrls?: Record<string, string>
 }
 
 export type MugProductMaintenanceResult = {
@@ -226,6 +229,10 @@ export async function maintainMugDesignProducts(
       try {
         const result = await importPrintfulProductToMedusa(printfulId, container, {
           regenerateMockups: true,
+          medusaProductId: product.id,
+          medusaHandle: product.handle,
+          medusaMetadata: product.metadata,
+          sourceUrlOverride: resolveSourceUrlFromMap(input.sourceUrls, product),
           catalogProductId: product.metadata?.printful_catalog_product_id
             ? Number(product.metadata.printful_catalog_product_id)
             : undefined,
