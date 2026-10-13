@@ -60,6 +60,7 @@ export type MockupTaskRunLog = {
   validation?: {
     pixelDiffRatio?: number
     inBoxPixelDiffRatio?: number
+    inBoxPassThreshold?: number
     passed?: boolean
     unknown?: boolean
     comparedToBlankUrl?: string

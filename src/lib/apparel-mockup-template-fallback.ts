@@ -20,9 +20,8 @@ export async function loadMockupTemplates(
 }
 
 /**
- * Map print-file pixels (12″×16″ @ 1800×2400) onto the template image.
- * Art **size** uses template_width/height so 3.75″ reads correctly on the visible shirt;
- * position anchors within print_area_left/top using print_area_width/height.
+ * Map print-file pixels onto the template print area (12″ width ↔ print_area_width px).
+ * Art size: (artIn / printFileIn) × print_area_width — e.g. 3.75″ → 3.75/12 × print_area_width.
  */
 export function computeTemplateArtRect(
   template: LayoutTemplate,
@@ -31,18 +30,38 @@ export function computeTemplateArtRect(
   const box = clampPrintPosition(printPosition)
   const printFileW = box.area_width
   const printFileH = box.area_height
-  const shirtW = template.template_width || template.print_area_width || 560
-  const shirtH = template.template_height || template.print_area_height || 295
-  const printSpanW = template.print_area_width || shirtW
-  const printSpanH = template.print_area_height || shirtH
+  const printSpanW = template.print_area_width || template.template_width || 560
+  const printSpanH = template.print_area_height || template.template_height || 295
   const printL = template.print_area_left ?? 0
   const printT = template.print_area_top ?? 0
 
-  const width = Math.round((box.width / printFileW) * shirtW)
-  const height = Math.round((box.height / printFileH) * shirtH)
-  const left = Math.round(printL + (box.left / printFileW) * printSpanW)
-  const top = Math.round(printT + (box.top / printFileH) * printSpanH)
+  const width = Math.round((box.width / printFileW) * printSpanW)
+  const height = Math.round((box.height / printFileH) * printSpanH)
+  let left = Math.round(printL + (box.left / printFileW) * printSpanW)
+  let top = Math.round(printT + (box.top / printFileH) * printSpanH)
+
+  const maxRight = printL + printSpanW
+  const maxBottom = printT + printSpanH
+  if (left + width > maxRight) {
+    left = Math.max(printL, maxRight - width)
+  }
+  if (top + height > maxBottom) {
+    top = Math.max(printT, maxBottom - height)
+  }
+  left = Math.max(printL, left)
+  top = Math.max(printT, top)
+
   return { left, top, width, height }
+}
+
+/** Art width in template px for a given width in inches on a 12″ print area. */
+export function templateArtWidthInchesToPx(
+  template: LayoutTemplate,
+  artWidthInches: number,
+  printFileWidthInches = 12
+): number {
+  const printSpanW = template.print_area_width || 560
+  return Math.round((artWidthInches / printFileWidthInches) * printSpanW)
 }
 
 export function clampExtractRegion(
