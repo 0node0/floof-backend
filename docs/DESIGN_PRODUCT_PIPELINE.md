@@ -186,6 +186,8 @@ yarn regenerate:mug-mockups
 | `PRODUCT_IDS` | all mugs | Comma-separated Medusa product ids (mockup regen only) |
 | `MUG_CATALOG_PRODUCT_IDS` | `19,483` | Extra catalog ids for mug detection |
 
+Regenerate a named set with `regenerateProducts` (Medusa id, handle, or title substring) or `productIds`. Mug wrap compositing always uses **single-sided** artwork — if the sync variant already points at a full wrap file, the pipeline extracts the front panel before re-compositing (avoids double-shrink regression).
+
 Mug mockups use **Lifestyle** and **Lifestyle 2** (and other non-blocked scenes; **Lifestyle 3** / hands-from-below is skipped because art mirrors). Placement **`default`**. The same **dual-panel wrap composite** is applied to **sync variant print files** and mockup tasks. Medusa gallery is **2–3 lifestyle images only** (no flat art or handle-side previews) when mockups exist.
 
 **Async maintenance (default):** `POST` with `maintenance: "regenerateMugMockups"` returns **202** with `jobId` and `statusUrl`. Poll **`GET /floof/maintenance-jobs/:jobId`** (same admin key) for `status` (`queued` → `running` → `completed`) and full per-mug `result.products`. Pass `"sync": true` to block until finished (may hit proxy timeouts).

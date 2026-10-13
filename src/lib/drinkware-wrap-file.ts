@@ -4,6 +4,7 @@ import {
   compositeMugWrapPng,
   readMugWrapDimensionsFromPosition,
 } from "./mug-wrap-composite"
+import { resolveSingleSidedArtPngForWrap } from "./mug-wrap-source-art"
 import {
   uploadPngToPrintfulFileLibrary,
   type PrintfulUploadedFile,
@@ -32,7 +33,7 @@ export async function createDrinkwareWrapPrintfulFile(
   log?.(
     `Compositing mug wrap ${dims.areaWidth}×${dims.areaHeight} (dual panel, mirrored back)…`
   )
-  const designPng = await fetchDesignPng(designUrl)
+  const designPng = await resolveSingleSidedArtPngForWrap(designUrl, dims, log)
   const wrapPng = await compositeMugWrapPng(designPng, dims)
   const uploaded = await uploadPngToPrintfulFileLibrary(
     client,

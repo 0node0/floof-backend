@@ -15,6 +15,8 @@ export type MaintainMugProductsInput = {
   stripFloofPrefix?: boolean
   /** Limit mockup regen to these Medusa product ids */
   productIds?: string[]
+  /** Match Medusa id, handle, or title (case-insensitive substring) */
+  regenerateProducts?: string[]
   /** Dry run — log actions only */
   dryRun?: boolean
   /**
@@ -61,6 +63,20 @@ function mugCatalogIdsFromEnv(): Set<string> {
       .map((s) => s.trim())
       .filter(Boolean)
   )
+}
+
+export function productMatchesRegenerateList(
+  product: { id: string; title: string; handle: string },
+  namesOrIds: string[]
+): boolean {
+  for (const token of namesOrIds) {
+    const t = token.trim()
+    if (!t) continue
+    if (product.id === t || product.handle === t) return true
+    if (product.title.toLowerCase().includes(t.toLowerCase())) return true
+    if (product.handle.toLowerCase().includes(t.toLowerCase())) return true
+  }
+  return false
 }
 
 export function countProductGalleryImages(product: {
@@ -151,8 +167,12 @@ export async function maintainMugDesignProducts(
   }
 
   let mugCandidates = all.filter((p) => looksLikeMug(p))
-  if (input.productIds?.length) {
-    mugCandidates = mugCandidates.filter((p) => input.productIds!.includes(p.id))
+  const regenList = [
+    ...(input.productIds || []),
+    ...(input.regenerateProducts || []),
+  ].filter(Boolean)
+  if (regenList.length) {
+    mugCandidates = mugCandidates.filter((p) => productMatchesRegenerateList(p, regenList))
   } else {
     mugCandidates = mugCandidates.filter((p) => p.metadata?.printful_product_id != null)
   }

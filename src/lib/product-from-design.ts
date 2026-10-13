@@ -41,6 +41,10 @@ import {
   isEphemeralFloofDesignUrl,
   resolveDurablePrintfulDesignUrl,
 } from "./printful-design-url"
+import {
+  readMugWrapDimensionsFromPosition,
+} from "./mug-wrap-composite"
+import { resolveMugWrapSourceDesignUrl } from "./mug-wrap-source-art"
 import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene, sceneKeyFromMockupTitle } from "./mockup-scene-dedupe"
 import {
@@ -778,15 +782,52 @@ export async function importPrintfulProductToMedusa(
 
   const catalogProductId = resolveCatalogProductIdForImport(opts, syncVariants, title)
 
-  const designUrl = await withThrottledRetries(
-    "Resolve durable design URL",
-    log,
-    () =>
-      resolveDurablePrintfulDesignUrl(client, syncVariants, {
+  const variantIdsForConfig = syncVariants
+    .map((v: { variant_id?: number }) => v.variant_id)
+    .filter(Boolean)
+    .slice(0, 4) as number[]
+
+  let preloadedMockupConfig: Awaited<ReturnType<typeof loadPrintfulMockupConfig>> | undefined
+  if (opts?.regenerateMockups && variantIdsForConfig.length) {
+    try {
+      preloadedMockupConfig = await loadPrintfulMockupConfig(
+        client,
+        Number(catalogProductId),
+        variantIdsForConfig
+      )
+    } catch (e: unknown) {
+      log(
+        `Preload mockup config failed: ${e instanceof Error ? e.message : String(e)}`
+      )
+    }
+  }
+
+  const resolveDesign = async (): Promise<string | undefined> => {
+    const useMugSource =
+      opts?.regenerateMockups &&
+      preloadedMockupConfig &&
+      (isMugCatalogProductId(Number(catalogProductId)) ||
+        preloadedMockupConfig.productKind === "drinkware")
+    if (useMugSource && preloadedMockupConfig) {
+      const dims = readMugWrapDimensionsFromPosition(preloadedMockupConfig.position)
+      const mugSource = await resolveMugWrapSourceDesignUrl(client, syncVariants, dims, {
         thumbnailUrl: syncProduct.thumbnail_url,
         fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
         log,
-      }),
+      })
+      if (mugSource) return mugSource
+    }
+    return resolveDurablePrintfulDesignUrl(client, syncVariants, {
+      thumbnailUrl: syncProduct.thumbnail_url,
+      fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
+      log,
+    })
+  }
+
+  const designUrl = await withThrottledRetries(
+    "Resolve durable design URL",
+    log,
+    resolveDesign,
     3,
     2000
   ).catch(() => undefined)
@@ -804,15 +845,10 @@ export async function importPrintfulProductToMedusa(
 
   if (opts?.regenerateMockups && designUrl && !isEphemeralFloofDesignUrl(designUrl)) {
     try {
-      const variantIds = syncVariants
-        .map((v: any) => v.variant_id)
-        .filter(Boolean)
-        .slice(0, 4)
-      const mockupConfig = await loadPrintfulMockupConfig(
-        client,
-        Number(catalogProductId),
-        variantIds
-      )
+      const variantIds = variantIdsForConfig
+      const mockupConfig =
+        preloadedMockupConfig ||
+        (await loadPrintfulMockupConfig(client, Number(catalogProductId), variantIds))
       mockupProductKind = mockupConfig.productKind
       if (isMugCatalogProductId(Number(catalogProductId))) {
         mockupProductKind = "drinkware"

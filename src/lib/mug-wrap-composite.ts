@@ -38,6 +38,39 @@ export function mugWrapArtPixelSize(
   return Math.min(width, height)
 }
 
+export type MugWrapCompositePlan = {
+  areaWidth: number
+  areaHeight: number
+  artSize: number
+  top: number
+  frontLeft: number
+  backLeft: number
+  frontCenterX: number
+  backCenterX: number
+}
+
+export function planMugWrapComposite(
+  dims: MugWrapDimensions,
+  widthRatio = 0.36
+): MugWrapCompositePlan {
+  const { areaWidth, areaHeight } = dims
+  const artSize = mugWrapArtPixelSize(areaWidth, areaHeight, widthRatio)
+  const centers = mugWrapPanelCenters(areaWidth)
+  const top = Math.round((areaHeight - artSize) / 2)
+  const frontLeft = centers.front - Math.round(artSize / 2)
+  const backLeft = centers.back - Math.round(artSize / 2)
+  return {
+    areaWidth,
+    areaHeight,
+    artSize,
+    top,
+    frontLeft,
+    backLeft,
+    frontCenterX: centers.front,
+    backCenterX: centers.back,
+  }
+}
+
 /**
  * Composite the design twice on the wrap: normal on the front panel, horizontally
  * mirrored on the back panel (standard POD mug wrap).
@@ -48,8 +81,7 @@ export async function compositeMugWrapPng(
   widthRatio = 0.36
 ): Promise<Buffer> {
   const { areaWidth, areaHeight } = dims
-  const artSize = mugWrapArtPixelSize(areaWidth, areaHeight, widthRatio)
-  const centers = mugWrapPanelCenters(areaWidth)
+  const { artSize, top, frontLeft, backLeft } = planMugWrapComposite(dims, widthRatio)
 
   const resized = await sharp(designPng)
     .resize(artSize, artSize, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
@@ -57,10 +89,6 @@ export async function compositeMugWrapPng(
     .toBuffer()
 
   const mirrored = await sharp(resized).flop().toBuffer()
-
-  const top = Math.round((areaHeight - artSize) / 2)
-  const frontLeft = centers.front - Math.round(artSize / 2)
-  const backLeft = centers.back - Math.round(artSize / 2)
 
   return sharp({
     create: {
