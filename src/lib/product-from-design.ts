@@ -35,6 +35,13 @@ import {
   resolveDurablePrintfulDesignUrl,
 } from "./printful-design-url"
 import { sleep as delay } from "./async-sleep"
+import { dedupeMockupShotsByScene } from "./mockup-scene-dedupe"
+import {
+  buildMugWrapFullBleedPosition,
+  compositeMugWrapPng,
+  readMugWrapDimensionsFromPosition,
+} from "./mug-wrap-composite"
+import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
 import {
   runPrintfulMockupTask,
   type MockupTaskRunLog,
@@ -208,6 +215,38 @@ async function permanizeMockupUrl(
   return url
 }
 
+async function fetchDesignPng(designUrl: string): Promise<Buffer> {
+  const res = await fetch(designUrl)
+  if (!res.ok) {
+    throw new Error(`Failed to fetch design (${res.status}): ${designUrl.slice(0, 80)}`)
+  }
+  return Buffer.from(await res.arrayBuffer())
+}
+
+async function prepareDrinkwareMockupImage(
+  client: PrintfulApiClient,
+  designUrl: string,
+  position: Record<string, number>,
+  log: (m: string) => void
+): Promise<{ imageUrl: string; position: Record<string, number> }> {
+  const dims = readMugWrapDimensionsFromPosition(position)
+  log(
+    `Compositing mug wrap ${dims.areaWidth}×${dims.areaHeight} (dual panel, mirrored back)…`
+  )
+  const designPng = await fetchDesignPng(designUrl)
+  const wrapPng = await compositeMugWrapPng(designPng, dims)
+  const cdnUrl = await uploadPngToPrintfulFileLibrary(
+    client,
+    wrapPng,
+    `mug-wrap-${dims.areaWidth}x${dims.areaHeight}.png`,
+    log
+  )
+  return {
+    imageUrl: cdnUrl,
+    position: buildMugWrapFullBleedPosition(dims.areaWidth, dims.areaHeight),
+  }
+}
+
 async function runMockupTask(
   client: PrintfulApiClient,
   catalogProductId: number,
@@ -217,7 +256,8 @@ async function runMockupTask(
   position: Record<string, number>,
   optionGroups: string[],
   log: (m: string) => void,
-  genderHint: "male" | "female" | "neutral" = "neutral"
+  genderHint: "male" | "female" | "neutral" = "neutral",
+  oneUrlPerTask = false
 ): Promise<{ shots: MockupShot[]; taskLog?: MockupTaskRunLog }> {
   const shots: MockupShot[] = []
   const group = optionGroups[0]
@@ -235,7 +275,8 @@ async function runMockupTask(
     { log, optionGroupLabel: group, sleep: (ms) => sleep(ms).then(() => undefined) }
   )
 
-  for (const url of taskLog.mockupUrls) {
+  const urls = oneUrlPerTask ? taskLog.mockupUrls.slice(0, 1) : taskLog.mockupUrls
+  for (const url of urls) {
     const title = `${group} · mockup`
     shots.push({
       url,
@@ -326,6 +367,20 @@ export async function generateLifestyleMockups(opts: {
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
   let taskIndex = 0
 
+  let mockupDesignUrl = designUrl
+  let mockupPosition = position
+  if (productKind === "drinkware") {
+    try {
+      const prepared = await prepareDrinkwareMockupImage(client, designUrl, position, log)
+      mockupDesignUrl = prepared.imageUrl
+      mockupPosition = prepared.position
+      log(`Drinkware mockup using composited wrap; position=${JSON.stringify(mockupPosition)}`)
+    } catch (e: unknown) {
+      const msg = e instanceof Error ? e.message : String(e)
+      log(`Mug wrap composite failed (${msg}) — falling back to single placement`)
+    }
+  }
+
   for (const batch of batches) {
     for (const group of batch.optionGroups.filter(Boolean)) {
       if (taskIndex > 0) {
@@ -337,12 +392,13 @@ export async function generateLifestyleMockups(opts: {
           client,
           catalogProductId,
           vids,
-          designUrl,
+          mockupDesignUrl,
           placement,
-          position,
+          mockupPosition,
           [group],
           log,
-          batch.gender
+          batch.gender,
+          productKind === "drinkware"
         )
         shots = shots.concat(batchShots)
         if (taskLog) mockupTasks.push(taskLog)
@@ -352,12 +408,7 @@ export async function generateLifestyleMockups(opts: {
     }
   }
 
-  const seen = new Set<string>()
-  shots = shots.filter((s) => {
-    if (seen.has(s.url)) return false
-    seen.add(s.url)
-    return true
-  })
+  shots = dedupeMockupShotsByScene(shots)
   log(
     `Raw mockups: ${shots.length} (♂${shots.filter((s) => s.gender === "male").length} ♀${shots.filter((s) => s.gender === "female").length})`
   )
