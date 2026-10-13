@@ -27,11 +27,18 @@ import { sleep } from "./async-sleep"
 import { withPrintfulRetries } from "./printful-retry"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
 import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
+import type { ApparelMockupReviewCandidate } from "./apparel-mockups"
+import { rehostImageUrlViaPrintful } from "./rehost-image-url"
 
 export type MaintainApparelPlacementsInput = {
   dryRun?: boolean
   /** Regenerate mockups and Medusa gallery only; do not rebuild or sync print files. */
   mockupsOnly?: boolean
+  /**
+   * With mockupsOnly: run Printful mockup tasks, return every candidate in reviewCandidates,
+   * skip pixel validation and Medusa gallery updates.
+   */
+  reviewOnly?: boolean
   layouts?: Record<string, ApparelPlacementLayout>
   productIds?: string[]
   products?: Array<{ productId: string; layout: ApparelPlacementLayout }>
@@ -64,6 +71,7 @@ export type ApparelProductMaintenanceResult = {
   }>
   mockupUrls: string[]
   mockupTasks: MockupTaskRunLog[]
+  reviewCandidates?: ApparelMockupReviewCandidate[]
   prices: ApparelVariantPriceReport[]
   syncVariantsUpdated?: number
   error?: string
@@ -335,7 +343,8 @@ export async function maintainApparelPlacements(
       }
 
       base.prices = await loadMedusaVariantPrices(container, product.id)
-      const mockupsOnly = input.mockupsOnly === true
+      const reviewOnly = input.reviewOnly === true
+      const mockupsOnly = input.mockupsOnly === true || reviewOnly
 
       const designSource = await withPrintfulRetries(
         "Resolve design source",
@@ -460,26 +469,37 @@ export async function maintainApparelPlacements(
         layout,
         printFiles: mockupInputs,
         log,
+        reviewOnly,
       })
       base.mockupTasks = mockupResult.mockupTasks
-      base.mockupUrls = mockupResult.validatedGallery.length
-        ? mockupResult.validatedGallery
-        : mockupResult.gallery
-      base.regenerated = mockupResult.hasValidatedMockups
-
-      if (mockupResult.hasValidatedMockups && mockupResult.validatedGallery.length) {
-        const replaced = await replaceProductGalleryImages(
-          container,
-          product.id,
-          mockupResult.validatedGallery,
-          mockupResult.validatedGallery[0]
-        )
-        base.imagesChanged = replaced.imagesChanged
-      } else if (mockupResult.gallery.length && !mockupResult.hasValidatedMockups) {
-        log(
-          `Skipping Medusa gallery update for ${product.handle}: no mockups passed validation`
-        )
+      if (reviewOnly) {
+        base.reviewCandidates = mockupResult.reviewCandidates
+        base.mockupUrls = mockupResult.reviewCandidates.map((c) => c.url)
+        base.regenerated = false
         base.imagesChanged = false
+        log(
+          `reviewOnly: collected ${mockupResult.reviewCandidates.length} mockup candidate(s) for ${product.handle}`
+        )
+      } else {
+        base.mockupUrls = mockupResult.validatedGallery.length
+          ? mockupResult.validatedGallery
+          : mockupResult.gallery
+        base.regenerated = mockupResult.hasValidatedMockups
+
+        if (mockupResult.hasValidatedMockups && mockupResult.validatedGallery.length) {
+          const replaced = await replaceProductGalleryImages(
+            container,
+            product.id,
+            mockupResult.validatedGallery,
+            mockupResult.validatedGallery[0]
+          )
+          base.imagesChanged = replaced.imagesChanged
+        } else if (mockupResult.gallery.length && !mockupResult.hasValidatedMockups) {
+          log(
+            `Skipping Medusa gallery update for ${product.handle}: no mockups passed validation`
+          )
+          base.imagesChanged = false
+        }
       }
 
       if (!mockupsOnly) {
@@ -493,7 +513,10 @@ export async function maintainApparelPlacements(
       }
 
       const backfill = designSource.backfillMetadata
-      if (backfill?.designSourceFileId || backfill?.designSourceUrl) {
+      if (
+        !reviewOnly &&
+        (backfill?.designSourceFileId || backfill?.designSourceUrl)
+      ) {
         await updateProductsWorkflow(container).run({
           input: {
             products: [
@@ -531,5 +554,55 @@ export async function maintainApparelPlacements(
     products: productResults,
     errors,
     logs,
+  }
+}
+
+export type ApplyApparelGalleryInput = {
+  productId: string
+  imageUrls: string[]
+}
+
+export type ApplyApparelGalleryResult = {
+  productId: string
+  imageUrls: string[]
+  rehostedUrls: string[]
+  imagesChanged: boolean
+  thumbnailChanged: boolean
+}
+
+/** Set a product gallery to exactly the given URLs (rehost via Printful when needed). */
+export async function applyApparelProductGallery(
+  container: MedusaContainer,
+  input: ApplyApparelGalleryInput
+): Promise<ApplyApparelGalleryResult> {
+  const productId = String(input.productId || "").trim()
+  if (!productId) {
+    throw new Error("applyGallery requires productId")
+  }
+  const imageUrls = (input.imageUrls || []).map((u) => String(u).trim()).filter(Boolean)
+  if (!imageUrls.length) {
+    throw new Error("applyGallery requires at least one imageUrl")
+  }
+
+  const log = (m: string) => console.log(`[applyGallery] ${m}`)
+  const client = makeClient()
+  const rehostedUrls: string[] = []
+  for (const url of imageUrls) {
+    rehostedUrls.push(await rehostImageUrlViaPrintful(client, url, log))
+  }
+
+  const replaced = await replaceProductGalleryImages(
+    container,
+    productId,
+    rehostedUrls,
+    rehostedUrls[0]
+  )
+
+  return {
+    productId,
+    imageUrls,
+    rehostedUrls: replaced.nextUrls,
+    imagesChanged: replaced.imagesChanged,
+    thumbnailChanged: replaced.thumbnailChanged,
   }
 }

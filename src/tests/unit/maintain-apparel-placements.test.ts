@@ -10,6 +10,14 @@ describe("maintain-apparel-placements input", () => {
     expect(map.get("prod_1")).toBe("leftChest")
   })
 
+  it("accepts reviewOnly flag in input type", () => {
+    const map = resolveLayoutMap({
+      reviewOnly: true,
+      layouts: { prod_1: "leftChest" },
+    })
+    expect(map.get("prod_1")).toBe("leftChest")
+  })
+
   it("resolves layouts from products array and layouts map", () => {
     const map = resolveLayoutMap({
       products: [{ productId: "a", layout: "leftChest" }],

@@ -1,6 +1,9 @@
 import { describe, it, expect } from "vitest"
 import {
+  computeLeftChestTemplateArtRect,
   computeTemplateArtRect,
+  LEFT_CHEST_PRINT_FILE_LEFT_PX,
+  LEFT_CHEST_PRINT_FILE_WIDTH_PX,
   templateArtWidthInchesToPx,
 } from "../../lib/apparel-mockup-template-fallback"
 import type { LayoutTemplate } from "../../lib/printful-mockup-config"
@@ -25,6 +28,28 @@ describe("apparel-mockup-template scaling", () => {
     expect(rect.width).toBe(expectedW)
     expect(rect.width).toBeLessThan(100)
     expect(rect.width).not.toBeGreaterThan(120)
+  })
+
+  it("544px-wide print area: width and left from 3.75/12 and 1219/1800 anchors", () => {
+    const template: LayoutTemplate = {
+      template_id: 2,
+      template_width: 800,
+      template_height: 1000,
+      print_area_width: 544,
+      print_area_height: 680,
+      print_area_left: 0,
+      print_area_top: 0,
+    }
+    const position = buildLeftChestPosition(1800, 2400)
+    const rect = computeLeftChestTemplateArtRect(template, position)
+    const expectedW = Math.round((3.75 / 12) * 544)
+    const expectedLeft = Math.round(
+      (LEFT_CHEST_PRINT_FILE_LEFT_PX / LEFT_CHEST_PRINT_FILE_WIDTH_PX) * 544
+    )
+    expect(expectedW).toBe(170)
+    expect(expectedLeft).toBe(368)
+    expect(rect.width).toBe(expectedW)
+    expect(rect.left).toBe(expectedLeft)
   })
 
   it("art rect stays inside template print_area bounds", () => {

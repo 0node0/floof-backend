@@ -1,6 +1,7 @@
 import sharp from "sharp"
 import type PrintfulApiClient from "../modules/printful/client"
 import {
+  buildLeftChestPosition,
   clampPrintPosition,
   type ApparelPrintPosition,
 } from "./apparel-placement-layout"
@@ -19,26 +20,55 @@ export async function loadMockupTemplates(
   return client.get<MockupTemplatesResult>(`/mockup-generator/templates/${catalogProductId}`)
 }
 
-/**
- * Map print-file pixels onto the template print area (12″ width ↔ print_area_width px).
- * Art size: (artIn / printFileIn) × print_area_width — e.g. 3.75″ → 3.75/12 × print_area_width.
- */
-export function computeTemplateArtRect(
-  template: LayoutTemplate,
-  printPosition: ApparelPrintPosition
-): { left: number; top: number; width: number; height: number } {
+/** Left-chest art anchor on 1800×2400 print file (matches `buildLeftChestPosition`). */
+export const LEFT_CHEST_PRINT_FILE_LEFT_PX = 1219
+export const LEFT_CHEST_PRINT_FILE_WIDTH_PX = 1800
+export const LEFT_CHEST_ART_WIDTH_IN = 3.75
+
+export function isLeftChestPrintPosition(printPosition: ApparelPrintPosition): boolean {
   const box = clampPrintPosition(printPosition)
-  const printFileW = box.area_width
-  const printFileH = box.area_height
+  const ref = buildLeftChestPosition(box.area_width, box.area_height)
+  return (
+    Math.abs(box.left - ref.left) <= 3 &&
+    Math.abs(box.width - ref.width) <= 3 &&
+    Math.abs(box.height - ref.height) <= 3
+  )
+}
+
+/**
+ * Left-chest template composite: fixed 3.75″ width and print-file left anchor mapped into print_area px.
+ */
+export function computeLeftChestTemplateArtRect(
+  template: LayoutTemplate,
+  printPosition?: ApparelPrintPosition
+): { left: number; top: number; width: number; height: number } {
+  const box = clampPrintPosition(
+    printPosition ?? buildLeftChestPosition(1800, 2400)
+  )
   const printSpanW = template.print_area_width || template.template_width || 560
   const printSpanH = template.print_area_height || template.template_height || 295
   const printL = template.print_area_left ?? 0
   const printT = template.print_area_top ?? 0
 
-  const width = Math.round((box.width / printFileW) * printSpanW)
-  const height = Math.round((box.height / printFileH) * printSpanH)
-  let left = Math.round(printL + (box.left / printFileW) * printSpanW)
-  let top = Math.round(printT + (box.top / printFileH) * printSpanH)
+  const width = Math.round((LEFT_CHEST_ART_WIDTH_IN / 12) * printSpanW)
+  const height = Math.round((LEFT_CHEST_ART_WIDTH_IN / 12) * printSpanH)
+  const left = Math.round(
+    printL + (LEFT_CHEST_PRINT_FILE_LEFT_PX / LEFT_CHEST_PRINT_FILE_WIDTH_PX) * printSpanW
+  )
+  const top = Math.round(printT + (box.top / box.area_height) * printSpanH)
+
+  return clampArtRectInsidePrintArea(template, { left, top, width, height })
+}
+
+function clampArtRectInsidePrintArea(
+  template: LayoutTemplate,
+  rect: { left: number; top: number; width: number; height: number }
+): { left: number; top: number; width: number; height: number } {
+  const printL = template.print_area_left ?? 0
+  const printT = template.print_area_top ?? 0
+  const printSpanW = template.print_area_width || template.template_width || 560
+  const printSpanH = template.print_area_height || template.template_height || 295
+  let { left, top, width, height } = rect
 
   const maxRight = printL + printSpanW
   const maxBottom = printT + printSpanH
@@ -52,6 +82,34 @@ export function computeTemplateArtRect(
   top = Math.max(printT, top)
 
   return { left, top, width, height }
+}
+
+/**
+ * Map print-file pixels onto the template print area (12″ width ↔ print_area_width px).
+ * Left chest uses {@link computeLeftChestTemplateArtRect} (3.75/12 width, left at 1219/1800).
+ */
+export function computeTemplateArtRect(
+  template: LayoutTemplate,
+  printPosition: ApparelPrintPosition
+): { left: number; top: number; width: number; height: number } {
+  if (isLeftChestPrintPosition(printPosition)) {
+    return computeLeftChestTemplateArtRect(template, printPosition)
+  }
+
+  const box = clampPrintPosition(printPosition)
+  const printFileW = box.area_width
+  const printFileH = box.area_height
+  const printSpanW = template.print_area_width || template.template_width || 560
+  const printSpanH = template.print_area_height || template.template_height || 295
+  const printL = template.print_area_left ?? 0
+  const printT = template.print_area_top ?? 0
+
+  const width = Math.round((box.width / printFileW) * printSpanW)
+  const height = Math.round((box.height / printFileH) * printSpanH)
+  let left = Math.round(printL + (box.left / printFileW) * printSpanW)
+  let top = Math.round(printT + (box.top / printFileH) * printSpanH)
+
+  return clampArtRectInsidePrintArea(template, { left, top, width, height })
 }
 
 /** Art width in template px for a given width in inches on a 12″ print area. */
