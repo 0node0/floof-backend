@@ -1,6 +1,6 @@
 import type { MedusaRequest, MedusaResponse } from "@medusajs/framework/http"
 import { setFloofCors } from "../../../../lib/cors"
-import { getMugMaintenanceJob } from "../../../../lib/mug-maintenance-jobs"
+import { getMaintenanceJob } from "../../../../lib/maintenance-jobs"
 
 function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
   const expected = process.env.FLOOF_ADMIN_KEY || ""
@@ -22,14 +22,14 @@ function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
 
 /**
  * GET /floof/maintenance-jobs/:jobId
- * Poll mug mockup maintenance started via POST /floof/design-products (async).
+ * Poll async maintenance started via POST /floof/design-products (mugs or apparel).
  */
 export async function GET(req: MedusaRequest, res: MedusaResponse) {
   setFloofCors(req, res)
   if (!requireAdmin(req, res)) return
 
   const jobId = req.params.jobId as string
-  const job = getMugMaintenanceJob(jobId)
+  const job = getMaintenanceJob(jobId)
   if (!job) {
     res.status(404).json({ error: "Job not found or expired" })
     return
@@ -37,6 +37,7 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
 
   res.status(200).json({
     ok: true,
+    kind: job.kind,
     jobId: job.id,
     status: job.status,
     createdAt: job.createdAt,

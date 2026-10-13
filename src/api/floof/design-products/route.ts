@@ -8,7 +8,10 @@ import {
 import { publicDesignUrl, stageDesignFile } from "../../../lib/design-staging"
 import { setFloofCors } from "../../../lib/cors"
 import { maintainMugDesignProducts } from "../../../lib/maintain-mug-products"
+import { maintainApparelPlacements } from "../../../lib/maintain-apparel-placements"
 import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
+import { startApparelMaintenanceJob } from "../../../lib/apparel-maintenance-jobs"
+import { parseApparelLayout } from "../../../lib/apparel-placement-layout"
 
 function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
   const expected = process.env.FLOOF_ADMIN_KEY || ""
@@ -116,6 +119,78 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     } catch (e: any) {
       console.error("[floof/design-products maintenance async]", e)
       res.status(500).json({ error: e.message || "Failed to start maintenance job" })
+    }
+    return
+  }
+
+  if (body.maintenance === "regenerateApparelPlacements") {
+    const layouts: Record<string, "leftChest" | "chestPlusBack" | "centred"> = {}
+    if (body.layouts && typeof body.layouts === "object" && !Array.isArray(body.layouts)) {
+      for (const [k, v] of Object.entries(body.layouts as Record<string, unknown>)) {
+        const layout = parseApparelLayout(v)
+        if (layout) layouts[k] = layout
+      }
+    }
+    const products = Array.isArray(body.products)
+      ? body.products
+          .map((row: Record<string, unknown>) => {
+            const productId = row.productId ?? row.id
+            const layout = parseApparelLayout(row.layout)
+            if (!productId || !layout) return null
+            return { productId: String(productId), layout }
+          })
+          .filter(Boolean)
+      : undefined
+
+    const apparelInput = {
+      dryRun: body.dryRun === true || body.dryRun === "true",
+      productIds: Array.isArray(body.productIds)
+        ? body.productIds.map(String)
+        : undefined,
+      layouts,
+      products: products as Array<{ productId: string; layout: "leftChest" | "chestPlusBack" | "centred" }> | undefined,
+      sourceUrls:
+        body.sourceUrls && typeof body.sourceUrls === "object" && !Array.isArray(body.sourceUrls)
+          ? Object.fromEntries(
+              Object.entries(body.sourceUrls as Record<string, unknown>).map(([k, v]) => [
+                k,
+                String(v),
+              ])
+            )
+          : undefined,
+    }
+    const runSync = body.sync === true || body.sync === "true" || body.async === false
+
+    if (runSync) {
+      try {
+        const result = await maintainApparelPlacements(req.scope, apparelInput)
+        res.status(200).json({ ok: true, maintenance: true, sync: true, ...result })
+      } catch (e: any) {
+        console.error("[floof/design-products apparel maintenance]", e)
+        res.status(500).json({ error: e.message || "Apparel maintenance failed" })
+      }
+      return
+    }
+
+    try {
+      const job = startApparelMaintenanceJob(req.scope, apparelInput)
+      const base =
+        process.env.MEDUSA_BACKEND_URL ||
+        process.env.BACKEND_URL ||
+        "http://localhost:9000"
+      const statusUrl = `${base.replace(/\/$/, "")}/floof/maintenance-jobs/${job.id}`
+      res.status(202).json({
+        ok: true,
+        maintenance: true,
+        async: true,
+        jobId: job.id,
+        status: job.status,
+        statusUrl,
+        poll: `GET ${statusUrl} with x-floof-admin-key`,
+      })
+    } catch (e: any) {
+      console.error("[floof/design-products apparel maintenance async]", e)
+      res.status(500).json({ error: e.message || "Failed to start apparel maintenance job" })
     }
     return
   }
@@ -276,6 +351,15 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       onlySparseGalleries: true,
       onlyIfGalleryImagesBelow: 2,
       note: "Default async — returns jobId; poll GET /floof/maintenance-jobs/:jobId",
+    },
+    apparelMaintenance: {
+      maintenance: "regenerateApparelPlacements",
+      products: [{ productId: "medusa-product-id", layout: "leftChest | chestPlusBack | centred" }],
+      layouts: { "medusa-product-id": "centred" },
+      productIds: ["medusa-product-id"],
+      dryRun: false,
+      sync: false,
+      note: "Async by default — poll GET /floof/maintenance-jobs/:jobId",
     },
   })
 }
