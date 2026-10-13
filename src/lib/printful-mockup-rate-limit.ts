@@ -7,9 +7,9 @@ export function resetPrintfulMockupCreateTaskThrottle(): void {
   lastMockupCreateTaskMs = 0
 }
 
-/** Printful mockup-generator create-task rate limit (default 2s between tasks). */
+/** Printful mockup-generator create-task rate limit (default 3s between tasks). */
 export async function throttlePrintfulMockupCreateTask(): Promise<void> {
-  const minGap = Number(process.env.PRINTFUL_MOCKUP_CREATE_MIN_MS || 2000)
+  const minGap = Number(process.env.PRINTFUL_MOCKUP_CREATE_MIN_MS || 3000)
   const now = Date.now()
   const wait = lastMockupCreateTaskMs + minGap - now
   if (wait > 0) {

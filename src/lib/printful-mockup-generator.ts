@@ -6,6 +6,8 @@
 import type PrintfulApiClient from "../modules/printful/client"
 import { extractMockupCandidatesFromTask } from "./apparel-mockup-candidates"
 import { throttlePrintfulMockupCreateTask } from "./printful-mockup-rate-limit"
+import { parsePrintfulRetryAfterMs } from "./printful-retry-after"
+import { sleep } from "./async-sleep"
 
 export type MockupPrintPosition = Record<string, number | boolean>
 
@@ -134,9 +136,12 @@ export async function pollPrintfulMockupTask(
       )
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : String(e)
-      if (/429|rate limit/i.test(msg)) {
-        log(`Mockup poll ${attempt}: rate limited — backing off ${delay}ms`)
-        delay = Math.min(delay * 2, maxDelay)
+      if (/429|rate limit|too many requests/i.test(msg)) {
+        const retryAfter = parsePrintfulRetryAfterMs(msg)
+        const wait = Math.max(delay, retryAfter ?? 0)
+        log(`Mockup poll ${attempt}: rate limited — backing off ${wait}ms`)
+        await sleepFn(wait)
+        delay = Math.min(Math.max(delay * 2, wait), maxDelay)
         continue
       }
       throw e
