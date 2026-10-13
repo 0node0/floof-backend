@@ -26,10 +26,17 @@ import {
   buildMugProductGallery,
   isMugCatalogProductId,
   loadPrintfulMockupConfig,
-  resolveDrinkwareLifestyleOptionGroups,
+  mugCatalogProductIdsFromEnv,
   stripFloofProductTitle,
   type MockupProductKind,
 } from "./printful-mockup-config"
+import { drinkwareMockupBatchesFromAvailable } from "./mug-mockup-scenes"
+import { createDrinkwareWrapPrintfulFile, type DrinkwareWrapFile } from "./drinkware-wrap-file"
+import {
+  buildSyncVariantFileReports,
+  updateSyncVariantsPrintFile,
+  type SyncVariantFileReport,
+} from "./printful-mug-sync"
 import {
   isEphemeralFloofDesignUrl,
   resolveDurablePrintfulDesignUrl,
@@ -37,28 +44,57 @@ import {
 import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene } from "./mockup-scene-dedupe"
 import {
-  buildMugWrapFullBleedPosition,
-  compositeMugWrapPng,
-  readMugWrapDimensionsFromPosition,
-} from "./mug-wrap-composite"
-import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
-import {
   runPrintfulMockupTask,
   type MockupTaskRunLog,
 } from "./printful-mockup-generator"
-import {
-  isStockCatalogImageUrl,
-  newLifestyleMockupUrlsAdded,
-  replaceProductGalleryImages,
-} from "./medusa-product-images"
+import { isStockCatalogImageUrl, replaceProductGalleryImages } from "./medusa-product-images"
 
 function drinkwareBatchesFallback() {
-  return resolveDrinkwareLifestyleOptionGroups(["Lifestyle", "Lifestyle 2", "Lifestyle 3"]).map(
-    (g) => ({
-      optionGroups: [g],
-      gender: "neutral" as const,
-    })
-  )
+  return drinkwareMockupBatchesFromAvailable(["Lifestyle", "Lifestyle 2", "Lifestyle 3"])
+}
+
+function resolveCatalogProductIdForImport(
+  opts: { catalogProductId?: number; category?: string } | undefined,
+  syncVariants: Array<{ product?: { product_id?: number } }>,
+  title: string
+): number {
+  if (opts?.catalogProductId) return Number(opts.catalogProductId)
+  const fromVariant = syncVariants[0]?.product?.product_id
+  if (fromVariant) return Number(fromVariant)
+  if (title.toLowerCase().includes("mug")) {
+    const ids = [...mugCatalogProductIdsFromEnv()]
+    return ids[0] ?? 19
+  }
+  const category = opts?.category || ""
+  if (category === "hoodies") return 146
+  if (category === "accessories") {
+    const ids = [...mugCatalogProductIdsFromEnv()]
+    return ids[0] ?? 19
+  }
+  return 71
+}
+
+async function withThrottledRetries<T>(
+  label: string,
+  log: (m: string) => void,
+  fn: () => Promise<T>,
+  attempts = 3,
+  baseMs = 3000
+): Promise<T> {
+  let lastError: unknown
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn()
+    } catch (e: unknown) {
+      lastError = e
+      const msg = e instanceof Error ? e.message : String(e)
+      if (i >= attempts - 1) break
+      const wait = baseMs * Math.pow(2, i)
+      log(`${label} failed (${msg}) — retry in ${wait}ms`)
+      await delay(wait)
+    }
+  }
+  throw lastError instanceof Error ? lastError : new Error(String(lastError))
 }
 
 export type GarmentKind = "tee" | "hoodie"
@@ -104,6 +140,8 @@ export type CreateFromDesignResult = {
     title: string
   } | null
   mockupTasks?: MockupTaskRunLog[]
+  mockupSkipReason?: string
+  syncVariantFiles?: SyncVariantFileReport[]
   imagesChanged?: boolean
   logs: string[]
 }
@@ -215,38 +253,6 @@ async function permanizeMockupUrl(
   return url
 }
 
-async function fetchDesignPng(designUrl: string): Promise<Buffer> {
-  const res = await fetch(designUrl)
-  if (!res.ok) {
-    throw new Error(`Failed to fetch design (${res.status}): ${designUrl.slice(0, 80)}`)
-  }
-  return Buffer.from(await res.arrayBuffer())
-}
-
-async function prepareDrinkwareMockupImage(
-  client: PrintfulApiClient,
-  designUrl: string,
-  position: Record<string, number>,
-  log: (m: string) => void
-): Promise<{ imageUrl: string; position: Record<string, number> }> {
-  const dims = readMugWrapDimensionsFromPosition(position)
-  log(
-    `Compositing mug wrap ${dims.areaWidth}×${dims.areaHeight} (dual panel, mirrored back)…`
-  )
-  const designPng = await fetchDesignPng(designUrl)
-  const wrapPng = await compositeMugWrapPng(designPng, dims)
-  const cdnUrl = await uploadPngToPrintfulFileLibrary(
-    client,
-    wrapPng,
-    `mug-wrap-${dims.areaWidth}x${dims.areaHeight}.png`,
-    log
-  )
-  return {
-    imageUrl: cdnUrl,
-    position: buildMugWrapFullBleedPosition(dims.areaWidth, dims.areaHeight),
-  }
-}
-
 async function runMockupTask(
   client: PrintfulApiClient,
   catalogProductId: number,
@@ -296,8 +302,14 @@ export async function generateLifestyleMockups(opts: {
   variantIds: number[]
   designUrl: string
   optionGroups?: string[]
+  drinkwareWrapFile?: DrinkwareWrapFile
   log: (m: string) => void
-}): Promise<{ shots: MockupShot[]; gallery: string[]; mockupTasks: MockupTaskRunLog[] }> {
+}): Promise<{
+  shots: MockupShot[]
+  gallery: string[]
+  mockupTasks: MockupTaskRunLog[]
+  mockupSkipReason?: string
+}> {
   const { client, catalogProductId, variantIds, designUrl, log } = opts
   let placement = "front"
   let productKind: MockupProductKind = "apparel"
@@ -361,49 +373,92 @@ export async function generateLifestyleMockups(opts: {
     log(`Using fallback drinkware lifestyle groups: ${batches.map((b) => b.optionGroups[0]).join(", ")}`)
   }
 
+  if (isMugCatalogProductId(catalogProductId) && productKind !== "drinkware") {
+    productKind = "drinkware"
+    placement = "default"
+    if (!batches.length) {
+      batches = drinkwareBatchesFallback()
+      log(`Forced drinkware batches for mug catalog #${catalogProductId}`)
+    }
+  }
+
+  const skipReasons: string[] = []
+  if (!batches.length) {
+    skipReasons.push("no mockup option_groups after scene filter")
+  }
+
   const vids = variantIds.slice(0, 2)
   let shots: MockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
+  const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3)
   let taskIndex = 0
 
   let mockupDesignUrl = designUrl
   let mockupPosition = position
+  let drinkwareWrapReady = productKind !== "drinkware"
   if (productKind === "drinkware") {
-    try {
-      const prepared = await prepareDrinkwareMockupImage(client, designUrl, position, log)
-      mockupDesignUrl = prepared.imageUrl
-      mockupPosition = prepared.position
-      log(`Drinkware mockup using composited wrap; position=${JSON.stringify(mockupPosition)}`)
-    } catch (e: unknown) {
-      const msg = e instanceof Error ? e.message : String(e)
-      log(`Mug wrap composite failed (${msg}) — falling back to single placement`)
+    if (opts.drinkwareWrapFile) {
+      mockupDesignUrl = opts.drinkwareWrapFile.cdnUrl
+      mockupPosition = opts.drinkwareWrapFile.position
+      drinkwareWrapReady = true
+      log(`Drinkware mockup using pre-built wrap file id=${opts.drinkwareWrapFile.fileId}`)
+    } else {
+      try {
+        const wrap = await withThrottledRetries(
+          "Mug wrap composite",
+          log,
+          () => createDrinkwareWrapPrintfulFile(client, designUrl, position, log),
+          taskRetries,
+          2000
+        )
+        mockupDesignUrl = wrap.cdnUrl
+        mockupPosition = wrap.position
+        drinkwareWrapReady = true
+        log(`Drinkware mockup using composited wrap file id=${wrap.fileId}`)
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        skipReasons.push(`mug wrap composite failed: ${msg}`)
+        log(`Mug wrap composite failed (${msg}) — cannot run drinkware mockups`)
+      }
     }
   }
 
   for (const batch of batches) {
     for (const group of batch.optionGroups.filter(Boolean)) {
+      if (productKind === "drinkware" && !drinkwareWrapReady) {
+        continue
+      }
       if (taskIndex > 0) {
         await delay(taskGapMs)
       }
       taskIndex++
       try {
-        const { shots: batchShots, taskLog } = await runMockupTask(
-          client,
-          catalogProductId,
-          vids,
-          mockupDesignUrl,
-          placement,
-          mockupPosition,
-          [group],
+        const { shots: batchShots, taskLog } = await withThrottledRetries(
+          `Mockup task (${group})`,
           log,
-          batch.gender,
-          productKind === "drinkware"
+          () =>
+            runMockupTask(
+              client,
+              catalogProductId,
+              vids,
+              mockupDesignUrl,
+              placement,
+              mockupPosition,
+              [group],
+              log,
+              batch.gender,
+              productKind === "drinkware"
+            ),
+          taskRetries,
+          taskGapMs
         )
         shots = shots.concat(batchShots)
         if (taskLog) mockupTasks.push(taskLog)
-      } catch (e: any) {
-        log(`Mockup task failed (${group}): ${e.message}`)
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e)
+        skipReasons.push(`task ${group}: ${msg}`)
+        log(`Mockup task failed (${group}): ${msg}`)
       }
     }
   }
@@ -422,7 +477,19 @@ export async function generateLifestyleMockups(opts: {
       ? buildDrinkwareLifestyleGallery(permanized)
       : buildLifestyleGallery(permanized)
   log(`Gallery ready (${gallery.length} images)`)
-  return { shots: permanized, gallery, mockupTasks }
+
+  let mockupSkipReason: string | undefined
+  if (!mockupTasks.length) {
+    mockupSkipReason =
+      skipReasons.length > 0
+        ? skipReasons.join("; ")
+        : batches.length
+          ? "all mockup tasks returned no task log"
+          : "no batches scheduled"
+    log(`No mockup tasks completed: ${mockupSkipReason}`)
+  }
+
+  return { shots: permanized, gallery, mockupTasks, mockupSkipReason }
 }
 
 /** Exact color match (case-insensitive), with light aliases */
@@ -514,25 +581,33 @@ export async function importPrintfulProductToMedusa(
   let mockups: MockupShot[] = []
   let gallery: string[] = []
   let mockupTasks: MockupTaskRunLog[] = []
+  let mockupSkipReason: string | undefined
+  let syncVariantFiles: SyncVariantFileReport[] = []
   let imagesChanged = false
 
-  const catalogProductId =
-    opts?.catalogProductId ||
-    syncVariants[0]?.product?.product_id ||
-    (category === "hoodies" ? 146 : 71)
+  const catalogProductId = resolveCatalogProductIdForImport(opts, syncVariants, title)
 
-  const designUrl = await resolveDurablePrintfulDesignUrl(client, syncVariants, {
-    thumbnailUrl: syncProduct.thumbnail_url,
-    fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
+  const designUrl = await withThrottledRetries(
+    "Resolve durable design URL",
     log,
-  })
+    () =>
+      resolveDurablePrintfulDesignUrl(client, syncVariants, {
+        thumbnailUrl: syncProduct.thumbnail_url,
+        fallbackUrls: flatArtUrls.length ? flatArtUrls : previewUrls,
+        log,
+      }),
+    3,
+    2000
+  ).catch(() => undefined)
 
   let mockupProductKind: MockupProductKind = "other"
   if (opts?.regenerateMockups) {
     if (!designUrl) {
-      log("No durable Printful design URL — cannot run mockup tasks")
+      mockupSkipReason = "no durable Printful design URL on sync variants"
+      log(`No mockup tasks: ${mockupSkipReason}`)
     } else if (isEphemeralFloofDesignUrl(designUrl)) {
-      log(`Refusing ephemeral design URL for mockups: ${designUrl}`)
+      mockupSkipReason = `ephemeral design URL refused: ${designUrl}`
+      log(`No mockup tasks: ${mockupSkipReason}`)
     }
   }
 
@@ -548,36 +623,104 @@ export async function importPrintfulProductToMedusa(
         variantIds
       )
       mockupProductKind = mockupConfig.productKind
+      if (isMugCatalogProductId(Number(catalogProductId))) {
+        mockupProductKind = "drinkware"
+      }
 
-      const result = await generateLifestyleMockups({
+      let drinkwareWrap: DrinkwareWrapFile | undefined
+      if (mockupProductKind === "drinkware") {
+        drinkwareWrap = await withThrottledRetries(
+          "Drinkware wrap + sync variant file",
+          log,
+          async () => {
+            const wrap = await createDrinkwareWrapPrintfulFile(
+              client,
+              designUrl,
+              mockupConfig.position,
+              log
+            )
+            await updateSyncVariantsPrintFile(
+              client,
+              printfulProductId,
+              syncVariants,
+              wrap.fileId,
+              mockupConfig.syncFileType || "default",
+              log
+            )
+            return wrap
+          },
+          Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3),
+          2500
+        )
+        const refreshed = await client.get<any>(`/store/products/${printfulProductId}`)
+        const refreshedVariants: any[] = refreshed.sync_variants || syncVariants
+        syncVariantFiles = buildSyncVariantFileReports(
+          refreshedVariants,
+          drinkwareWrap.fileId,
+          mockupConfig.syncFileType || "default"
+        )
+        log(
+          `Sync variant files: ${syncVariantFiles
+            .map(
+              (v) =>
+                `#${v.syncVariantId} file=${v.printfulFileId} match=${v.compositeFileMatches}`
+            )
+            .join(", ")}`
+        )
+      }
+
+      let result = await generateLifestyleMockups({
         client,
         catalogProductId: Number(catalogProductId),
         variantIds,
         designUrl,
+        drinkwareWrapFile: drinkwareWrap,
         log,
       })
+      if (!result.mockupTasks.length && result.mockupSkipReason) {
+        const retryWait = Number(process.env.MUG_MOCKUP_REGEN_RETRY_MS || 8000)
+        log(`Retrying mockup tasks in ${retryWait}ms (${result.mockupSkipReason})`)
+        await delay(retryWait)
+        result = await generateLifestyleMockups({
+          client,
+          catalogProductId: Number(catalogProductId),
+          variantIds,
+          designUrl,
+          drinkwareWrapFile: drinkwareWrap,
+          log,
+        })
+      }
       mockups = result.shots
       mockupTasks = result.mockupTasks
+      mockupSkipReason = result.mockupSkipReason
 
       if (mockupProductKind === "drinkware") {
         gallery = buildMugProductGallery(
           mockups,
-          flatArtUrls,
+          [],
           previewUrls.filter((u) => isStockCatalogImageUrl(u))
         )
       } else {
         gallery = result.gallery
       }
       log(`Regenerated gallery (${gallery.length} urls): ${gallery.join(" | ")}`)
+      if (!mockupTasks.length && mockupSkipReason) {
+        log(`No mockup tasks for Printful #${printfulProductId}: ${mockupSkipReason}`)
+      }
     } catch (e: any) {
-      log(`Regenerate mockups failed: ${e.message}`)
+      mockupSkipReason = e.message || String(e)
+      log(`Regenerate mockups failed: ${mockupSkipReason}`)
     }
   }
 
-  if (!gallery.length) {
+  const drinkwareRegen =
+    opts?.regenerateMockups &&
+    (mockupProductKind === "drinkware" || isMugCatalogProductId(Number(catalogProductId)))
+
+  if (!gallery.length && !drinkwareRegen) {
     gallery = buildLifestyleGallery(mockups, flatArtUrls.length ? flatArtUrls : previewUrls)
   }
-  if (!gallery.length) {
+  if (!gallery.length && !drinkwareRegen) {
     gallery = flatArtUrls.slice(0, 7)
   }
 
@@ -621,35 +764,33 @@ export async function importPrintfulProductToMedusa(
 
   let medusa: CreateFromDesignResult["medusa"] = null
 
-  if (existingProduct && images.length) {
+  const shouldUpdateGallery =
+    existingProduct &&
+    images.length > 0 &&
+    (!drinkwareRegen || gallery.length > 0)
+
+  if (shouldUpdateGallery) {
     log(
-      `Replacing Medusa product ${existingProduct.id} (${existingProduct.handle}) gallery (${images.length} images)`
+      `Replacing Medusa product ${existingProduct!.id} (${existingProduct!.handle}) gallery (${images.length} images)`
     )
-    const cleanedTitle = stripFloofProductTitle(existingProduct.title)
+    const cleanedTitle = stripFloofProductTitle(existingProduct!.title)
     try {
       const replaced = await replaceProductGalleryImages(
         container,
-        existingProduct.id,
+        existingProduct!.id,
         images,
         images[0]
       )
-      const lifestyleUrls = mockups
-        .filter((s) => s.kind === "lifestyle")
-        .map((s) => s.url)
-      imagesChanged = newLifestyleMockupUrlsAdded(
-        replaced.previousUrls,
-        replaced.nextUrls,
-        lifestyleUrls
-      )
+      imagesChanged = replaced.imagesChanged
       log(
-        `Gallery replace lifestyleAdded=${imagesChanged} urlsChanged=${replaced.imagesChanged} thumbnailChanged=${replaced.thumbnailChanged}`
+        `Gallery saved imagesChanged=${imagesChanged} thumbnailChanged=${replaced.thumbnailChanged}`
       )
 
       await updateProductsWorkflow(container).run({
         input: {
           products: [
             {
-              id: existingProduct.id,
+              id: existingProduct!.id,
               title: cleanedTitle,
               metadata: {
                 printful_product_id: printfulProductId,
@@ -663,15 +804,15 @@ export async function importPrintfulProductToMedusa(
         } as any,
       })
       medusa = {
-        productId: existingProduct.id,
-        handle: existingProduct.handle,
+        productId: existingProduct!.id,
+        handle: existingProduct!.handle,
         title: cleanedTitle,
       }
-      log(`Updated product ${existingProduct.handle}`)
+      log(`Updated product ${existingProduct!.handle}`)
     } catch (e: any) {
       log(`Medusa gallery replace failed: ${e.message}`)
       throw new Error(
-        `Found product ${existingProduct.handle} but could not update images: ${e.message}`
+        `Found product ${existingProduct!.handle} but could not update images: ${e.message}`
       )
     }
   }
@@ -704,6 +845,8 @@ export async function importPrintfulProductToMedusa(
     gallery: images,
     medusa,
     mockupTasks,
+    mockupSkipReason,
+    syncVariantFiles,
     imagesChanged,
     logs,
   }

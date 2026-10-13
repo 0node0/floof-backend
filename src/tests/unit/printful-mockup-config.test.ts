@@ -25,7 +25,7 @@ describe("printful-mockup-config", () => {
     expect(resolveSyncFileType("default")).toBe("default")
   })
 
-  it("uses one Printful task per drinkware lifestyle group (Lifestyle 1–3)", () => {
+  it("uses one Printful task per allowed drinkware lifestyle group (skips mirrored Lifestyle 3)", () => {
     const available = [
       "Flat",
       "Lifestyle",
@@ -35,12 +35,8 @@ describe("printful-mockup-config", () => {
       "On Table",
     ]
     const batches = selectMockupOptionBatches(available, undefined, "drinkware")
-    expect(batches).toHaveLength(3)
-    expect(batches.map((b) => b.optionGroups[0])).toEqual([
-      "Lifestyle",
-      "Lifestyle 2",
-      "Lifestyle 3",
-    ])
+    expect(batches).toHaveLength(2)
+    expect(batches.map((b) => b.optionGroups[0])).toEqual(["Lifestyle", "Lifestyle 2"])
     expect(batches.every((b) => b.gender === "neutral")).toBe(true)
   })
 

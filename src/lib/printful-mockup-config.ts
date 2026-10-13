@@ -4,6 +4,7 @@
  */
 
 import type PrintfulApiClient from "../modules/printful/client"
+import { filterDrinkwareMockupOptionGroups } from "./mug-mockup-scenes"
 
 export type PrintfileInfo = {
   printfile_id?: number
@@ -358,7 +359,7 @@ export function selectMockupOptionBatches(
   }
 
   if (productKind === "drinkware") {
-    const groups = resolveDrinkwareLifestyleOptionGroups(available)
+    const groups = filterDrinkwareMockupOptionGroups(available, 3)
     if (groups.length) return drinkwareBatches(groups)
   }
 
@@ -456,7 +457,7 @@ export function buildDrinkwareLifestyleGallery(
   }
 
   for (const s of sorted) {
-    if (urls.length >= 7) break
+    if (urls.length >= 3) break
     const scene = (() => {
       const m = /lifestyle\s*(\d+)?/i.exec(s.title || "")
       if (m) return `lifestyle-${m[1] || "1"}`
@@ -465,10 +466,10 @@ export function buildDrinkwareLifestyleGallery(
     push(s.url, scene)
   }
   for (const u of extras) {
-    if (urls.length >= 7) break
+    if (urls.length >= 3) break
     push(u)
   }
-  return urls
+  return urls.slice(0, 3)
 }
 
 export async function loadPrintfulMockupConfig(
