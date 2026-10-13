@@ -6,10 +6,11 @@ import {
   parseApparelLayout,
   planApparelPlacementLayout,
   type ApparelPlacementLayout,
+  type ApparelPlacementPlanEntry,
 } from "./apparel-placement-layout"
 import { buildApparelPrintFilesForPlacements } from "./apparel-print-file"
 import { formatErrorMessage } from "./serialize-error"
-import { generateLifestyleMockups } from "./product-from-design"
+import { generateApparelPlacementMockups } from "./product-from-design"
 import {
   DESIGN_SOURCE_FILE_ID_META,
   DESIGN_SOURCE_URL_META,
@@ -21,13 +22,12 @@ import PrintfulApiClient from "../modules/printful/client"
 import type { PrintfilesApiResult } from "./printful-mockup-config"
 import { updateSyncVariantsPrintFilesIdempotent } from "./printful-apparel-sync"
 import { sleep } from "./async-sleep"
+import { withPrintfulRetries } from "./printful-retry"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
 
 export type MaintainApparelPlacementsInput = {
   dryRun?: boolean
-  /** Medusa product id → layout */
   layouts?: Record<string, ApparelPlacementLayout>
-  /** Parallel arrays alternative */
   productIds?: string[]
   products?: Array<{ productId: string; layout: ApparelPlacementLayout }>
   sourceUrls?: Record<string, string>
@@ -47,12 +47,15 @@ export type ApparelProductMaintenanceResult = {
   printfulProductId?: number
   regenerated: boolean
   imagesChanged: boolean
+  dryRun?: boolean
+  plannedPlacements?: ApparelPlacementPlanEntry[]
   printFiles: Array<{
     placement: string
     syncFileType: string
-    fileId: number
-    url: string
+    fileId?: number
+    url?: string
     position: Record<string, number>
+    positionInches?: ApparelPlacementPlanEntry["inches"]
   }>
   mockupUrls: string[]
   mockupTasks: MockupTaskRunLog[]
@@ -107,7 +110,13 @@ async function loadMedusaVariantPrices(
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const { data } = await query.graph({
     entity: "product",
-    fields: ["id", "variants.id", "variants.sku", "variants.prices.amount", "variants.prices.currency_code"],
+    fields: [
+      "id",
+      "variants.id",
+      "variants.sku",
+      "variants.prices.amount",
+      "variants.prices.currency_code",
+    ],
     filters: { id: productId },
   })
   const product = (data || [])[0] as {
@@ -216,34 +225,14 @@ export async function maintainApparelPlacements(
       continue
     }
 
-    if (input.dryRun) {
-      base.regenerated = true
-      productResults.push(base)
-      continue
-    }
-
     try {
-      base.prices = await loadMedusaVariantPrices(container, product.id)
-
-      const designSource = await resolveMugDesignSource(client, {
-        medusaProductId: product.id,
-        title: product.title,
-        handle: product.handle,
-        phrase:
-          typeof product.metadata?.phrase === "string" ? product.metadata.phrase : undefined,
-        metadata: product.metadata,
-        sourceUrlOverride: resolveSourceUrlFromMap(input.sourceUrls, product),
+      const detail = await withPrintfulRetries(
+        `GET Printful product ${printfulId}`,
         log,
-      })
-      if (!designSource?.url) {
-        throw new Error(
-          "no design source (set metadata designSourceFileId or sourceUrls[productId])"
-        )
-      }
-
-      const detail = await client.get<any>(`/store/products/${printfulId}`)
+        () => client.get<any>(`/store/products/${printfulId}`)
+      )
       const syncVariants: any[] = detail.sync_variants || []
-      if (!syncVariants.length) {
+      if (!syncVariants.length && !input.dryRun) {
         throw new Error(`Printful product ${printfulId} has no sync variants`)
       }
 
@@ -252,9 +241,15 @@ export async function maintainApparelPlacements(
         .filter(Boolean)
         .slice(0, 4) as number[]
 
-      const printfilesRaw = await client.get<PrintfilesApiResult>(
-        `/mockup-generator/printfiles/${catalogProductId}`
+      const printfilesRaw = await withPrintfulRetries(
+        `GET printfiles ${catalogProductId}`,
+        log,
+        () =>
+          client.get<PrintfilesApiResult>(
+            `/mockup-generator/printfiles/${catalogProductId}`
+          )
       )
+
       const isHoodie = detectApparelIsHoodie({
         title: product.title,
         handle: product.handle,
@@ -267,9 +262,49 @@ export async function maintainApparelPlacements(
       const layoutPlan = planApparelPlacementLayout(
         layout,
         printfilesRaw,
-        variantIds,
+        variantIds.length ? variantIds : [1],
         isHoodie
       )
+      base.plannedPlacements = layoutPlan.planned
+      base.dryRun = input.dryRun === true
+      base.printFiles = layoutPlan.planned.map((p) => ({
+        placement: p.placement,
+        syncFileType: p.syncFileType,
+        position: p.position,
+        positionInches: p.inches,
+      }))
+
+      if (input.dryRun) {
+        base.regenerated = false
+        productResults.push(base)
+        log(`Dry run ${product.handle}: ${JSON.stringify(layoutPlan.planned)}`)
+        continue
+      }
+
+      base.prices = await loadMedusaVariantPrices(container, product.id)
+
+      const designSource = await withPrintfulRetries(
+        "Resolve design source",
+        log,
+        () =>
+          resolveMugDesignSource(client, {
+            medusaProductId: product.id,
+            title: product.title,
+            handle: product.handle,
+            phrase:
+              typeof product.metadata?.phrase === "string"
+                ? product.metadata.phrase
+                : undefined,
+            metadata: product.metadata,
+            sourceUrlOverride: resolveSourceUrlFromMap(input.sourceUrls, product),
+            log,
+          })
+      )
+      if (!designSource?.url) {
+        throw new Error(
+          "no design source (set metadata designSourceFileId or sourceUrls[productId])"
+        )
+      }
 
       const printFiles = await buildApparelPrintFilesForPlacements(
         client,
@@ -277,18 +312,24 @@ export async function maintainApparelPlacements(
         layoutPlan.placements,
         log
       )
-      base.printFiles = printFiles.map((f) => ({
-        placement: f.placement,
-        syncFileType: f.syncFileType,
-        fileId: f.fileId,
-        url: f.cdnUrl,
-        position: f.position,
-      }))
+      base.printFiles = printFiles.map((f) => {
+        const planned = layoutPlan.planned.find((p) => p.placement === f.placement)
+        return {
+          placement: f.placement,
+          syncFileType: f.syncFileType,
+          fileId: f.fileId,
+          url: f.cdnUrl,
+          position: f.position,
+          positionInches: planned?.inches,
+        }
+      })
 
-      const syncFileRefs = printFiles.map((f) => ({
-        fileId: f.fileId,
-        type: f.syncFileType,
-      }))
+      const syncFileRefs = printFiles
+        .filter((f) => f.fileId != null)
+        .map((f) => ({
+          fileId: f.fileId!,
+          type: f.syncFileType,
+        }))
       const syncStats = await updateSyncVariantsPrintFilesIdempotent(
         client,
         printfulId,
@@ -298,17 +339,19 @@ export async function maintainApparelPlacements(
       )
       base.syncVariantsUpdated = syncStats.updated
 
-      const frontPrint = printFiles.find((f) => f.placement === "front") || printFiles[0]
-      const mockupResult = await generateLifestyleMockups({
+      const mockupInputs = printFiles
+        .filter((f) => f.cdnUrl)
+        .map((f) => ({
+          placement: f.placement,
+          cdnUrl: f.cdnUrl!,
+          mockupPosition: f.mockupPosition,
+        }))
+
+      const mockupResult = await generateApparelPlacementMockups({
         client,
         catalogProductId,
         variantIds,
-        designUrl: designSource.url,
-        apparelMockup: {
-          placement: frontPrint.placement,
-          position: frontPrint.mockupPosition,
-          designUrl: frontPrint.cdnUrl,
-        },
+        printFiles: mockupInputs,
         log,
       })
       base.mockupTasks = mockupResult.mockupTasks

@@ -1,4 +1,5 @@
 import type PrintfulApiClient from "../modules/printful/client"
+import { withPrintfulRetries } from "./printful-retry"
 
 export type SyncVariantFileRef = { fileId: number; type: string }
 
@@ -46,6 +47,10 @@ export async function updateSyncVariantsPrintFilesIdempotent(
   log?.(
     `PUT /store/products/${printfulProductId} — set print files on ${needsUpdate.length}/${syncVariants.length} variant(s)`
   )
-  await client.put(`/store/products/${printfulProductId}`, payload)
+  await withPrintfulRetries(
+    `PUT sync product ${printfulProductId}`,
+    log ?? (() => undefined),
+    () => client.put(`/store/products/${printfulProductId}`, payload)
+  )
   return { updated: needsUpdate.length, skipped: syncVariants.length - needsUpdate.length }
 }

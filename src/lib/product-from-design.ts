@@ -724,6 +724,85 @@ export async function generateLifestyleMockups(opts: {
   return { shots: permanized, gallery, mockupTasks, mockupScenes, mockupSkipReason }
 }
 
+/** Lifestyle mockups per print placement (front tasks use front, back tasks use back). */
+export async function generateApparelPlacementMockups(opts: {
+  client: PrintfulApiClient
+  catalogProductId: number
+  variantIds: number[]
+  printFiles: Array<{
+    placement: string
+    cdnUrl: string
+    mockupPosition: Record<string, number>
+  }>
+  log: (m: string) => void
+}): Promise<{
+  shots: MockupShot[]
+  gallery: string[]
+  mockupTasks: MockupTaskRunLog[]
+}> {
+  const { client, catalogProductId, variantIds, log } = opts
+  const vids = variantIds.slice(0, 2)
+  const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
+  const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3)
+  let shots: MockupShot[] = []
+  const mockupTasks: MockupTaskRunLog[] = []
+  let taskIndex = 0
+
+  const mockupConfig = await loadPrintfulMockupConfig(client, catalogProductId, variantIds)
+  const batches = mockupConfig.batches
+
+  for (const printFile of opts.printFiles) {
+    const placement = printFile.placement
+    log(
+      `Apparel mockups placement=${placement} (${printFile.cdnUrl.slice(0, 64)}…)`
+    )
+    for (const batch of batches) {
+      for (const group of batch.optionGroups.filter(Boolean)) {
+        if (taskIndex > 0) await delay(taskGapMs)
+        taskIndex++
+        try {
+          const { shots: batchShots, taskLog } = await withThrottledRetries(
+            `Mockup ${placement} (${group})`,
+            log,
+            () =>
+              runMockupTask(
+                client,
+                catalogProductId,
+                vids,
+                printFile.cdnUrl,
+                placement,
+                printFile.mockupPosition,
+                [group],
+                log,
+                batch.gender,
+                false
+              ),
+            taskRetries,
+            taskGapMs
+          )
+          shots = shots.concat(batchShots)
+          if (taskLog) mockupTasks.push(taskLog)
+        } catch (e: unknown) {
+          log(
+            `Mockup task failed placement=${placement} group=${group}: ${
+              e instanceof Error ? e.message : String(e)
+            }`
+          )
+        }
+      }
+    }
+  }
+
+  shots = dedupeMockupShotsByScene(shots)
+  const permanized: MockupShot[] = []
+  for (const s of shots) {
+    permanized.push({ ...s, url: await permanizeMockupUrl(client, s.url, log) })
+  }
+  const gallery = buildLifestyleGallery(permanized)
+  log(`Apparel placement gallery (${gallery.length} images)`)
+  return { shots: permanized, gallery, mockupTasks }
+}
+
 /** Exact color match (case-insensitive), with light aliases */
 function colorMatches(variantColor: string, wanted: string[]): boolean {
   const c = variantColor.toLowerCase().trim()
