@@ -3,7 +3,10 @@ import {
   isLikelyMugWrapAssetUrl,
   isMugWrapImageDimensions,
 } from "./mug-wrap-asset-detect"
-import { pickDurableUrlFromFile } from "./printful-design-url"
+import {
+  isLikelyPrintfulPreviewUrl,
+  resolveFullPrintfulFileUrlById,
+} from "./printful-file-url"
 import sharp from "sharp"
 
 export const DESIGN_SOURCE_FILE_ID_META = "designSourceFileId"
@@ -12,6 +15,8 @@ export const DESIGN_SOURCE_URL_META = "designSourceUrl"
 export type MugDesignSourceResolution = {
   url: string
   fileId?: number
+  sourceWidth?: number
+  sourceHeight?: number
   source:
     | "sourceUrls_override"
     | "metadata_url"
@@ -162,7 +167,7 @@ export async function discoverOriginalDesignFileFromLibrary(
     phrase?: string
     log?: (m: string) => void
   }
-): Promise<{ fileId: number; url: string } | undefined> {
+): Promise<{ fileId: number; url: string; width?: number; height?: number } | undefined> {
   const log = opts.log
   const limit = 100
   const maxPages = Number(process.env.PRINTFUL_FILE_LIBRARY_SCAN_PAGES || 30)
@@ -194,28 +199,26 @@ export async function discoverOriginalDesignFileFromLibrary(
 
   matches.sort((a, b) => a.id - b.id)
   const chosen = matches[0]
-  let url = pickDurableUrlFromFile(chosen as Parameters<typeof pickDurableUrlFromFile>[0])
-  if (!url && chosen.id) {
-    try {
-      const detail = await client.get<{ result?: PrintfulFileListItem }>(`/files/${chosen.id}`)
-      const file = detail?.result ?? (detail as PrintfulFileListItem)
-      url = pickDurableUrlFromFile(file as Parameters<typeof pickDurableUrlFromFile>[0])
-    } catch {
-      /* ignore */
-    }
-  }
-  if (!url) return undefined
+  const resolved = await resolveFullPrintfulFileUrlById(client, chosen.id, log)
+  if (!resolved) return undefined
   log?.(
     `Discovered design source from file library: id=${chosen.id} filename=${chosen.filename || "?"}`
   )
-  return { fileId: chosen.id, url }
+  return {
+    fileId: chosen.id,
+    url: resolved.url,
+    width: resolved.width,
+    height: resolved.height,
+  }
 }
 
-async function urlFromPrintfulFileId(
+async function resolveDesignFileFromId(
   client: PrintfulApiClient,
   fileId: number,
   log?: (m: string) => void
-): Promise<string | undefined> {
+): Promise<{ url: string; width?: number; height?: number } | undefined> {
+  const resolved = await resolveFullPrintfulFileUrlById(client, fileId, log)
+  if (!resolved) return undefined
   try {
     const detail = await client.get<{ result?: PrintfulFileListItem }>(`/files/${fileId}`)
     const file = detail?.result ?? (detail as PrintfulFileListItem)
@@ -223,11 +226,41 @@ async function urlFromPrintfulFileId(
       log?.(`Refusing wrap file id=${fileId} (${file.filename}) in metadata`)
       return undefined
     }
-    return pickDurableUrlFromFile(file as Parameters<typeof pickDurableUrlFromFile>[0])
-  } catch (e) {
-    log?.(`GET /files/${fileId} failed: ${e instanceof Error ? e.message : String(e)}`)
-    return undefined
+  } catch {
+    /* ignore */
   }
+  return resolved
+}
+
+async function ensureFullResolutionSource(
+  client: PrintfulApiClient,
+  opts: {
+    url: string
+    fileId?: number
+    log?: (m: string) => void
+  }
+): Promise<{ url: string; fileId?: number; width?: number; height?: number }> {
+  const log = opts.log
+  if (opts.fileId) {
+    const fromId = await resolveDesignFileFromId(client, opts.fileId, log)
+    if (fromId) {
+      return { url: fromId.url, fileId: opts.fileId, width: fromId.width, height: fromId.height }
+    }
+  }
+  if (isLikelyPrintfulPreviewUrl(opts.url)) {
+    log?.(`source URL looks like a preview — need designSourceFileId to resolve full file`)
+  }
+  const head = await fetch(opts.url, { method: "HEAD" }).catch(() => null)
+  if (head?.ok) {
+    const w = head.headers.get("x-amz-meta-width") || head.headers.get("width")
+    log?.(`Using design URL (HEAD ok)${w ? ` width=${w}` : ""}`)
+  }
+  const buf = await fetch(opts.url).then((r) => r.arrayBuffer()).catch(() => null)
+  if (buf) {
+    const { width, height } = await imageDimensions(Buffer.from(buf))
+    return { url: opts.url, fileId: opts.fileId, width, height }
+  }
+  return { url: opts.url, fileId: opts.fileId }
 }
 
 export async function resolveMugDesignSource(
@@ -246,33 +279,53 @@ export async function resolveMugDesignSource(
   const meta = readDesignSourceFromMetadata(opts.metadata)
 
   if (opts.sourceUrlOverride?.trim()) {
-    const url = opts.sourceUrlOverride.trim()
+    const overrideUrl = opts.sourceUrlOverride.trim()
     log?.(`Mug design source: job override for ${opts.medusaProductId}`)
+    const full = await ensureFullResolutionSource(client, {
+      url: overrideUrl,
+      fileId: meta.fileId,
+      log,
+    })
     return {
-      url,
+      url: full.url,
+      fileId: full.fileId ?? meta.fileId,
+      sourceWidth: full.width,
+      sourceHeight: full.height,
       source: "sourceUrls_override",
-      backfillMetadata: { designSourceUrl: url },
+      backfillMetadata: {
+        designSourceUrl: full.url,
+        ...(full.fileId != null ? { designSourceFileId: full.fileId } : {}),
+      },
+    }
+  }
+
+  if (meta.fileId) {
+    const fromId = await resolveDesignFileFromId(client, meta.fileId, log)
+    if (fromId) {
+      log?.(`Mug design source: metadata.${DESIGN_SOURCE_FILE_ID_META}=${meta.fileId}`)
+      return {
+        url: fromId.url,
+        fileId: meta.fileId,
+        sourceWidth: fromId.width,
+        sourceHeight: fromId.height,
+        source: "metadata_file_id",
+      }
     }
   }
 
   if (meta.url && !isLikelyMugWrapAssetUrl(meta.url)) {
     log?.(`Mug design source: metadata.${DESIGN_SOURCE_URL_META}`)
-    return {
+    const full = await ensureFullResolutionSource(client, {
       url: meta.url,
       fileId: meta.fileId,
+      log,
+    })
+    return {
+      url: full.url,
+      fileId: full.fileId ?? meta.fileId,
+      sourceWidth: full.width,
+      sourceHeight: full.height,
       source: "metadata_url",
-    }
-  }
-
-  if (meta.fileId) {
-    const url = await urlFromPrintfulFileId(client, meta.fileId, log)
-    if (url) {
-      log?.(`Mug design source: metadata.${DESIGN_SOURCE_FILE_ID_META}=${meta.fileId}`)
-      return {
-        url,
-        fileId: meta.fileId,
-        source: "metadata_file_id",
-      }
     }
   }
 
@@ -286,6 +339,8 @@ export async function resolveMugDesignSource(
     return {
       url: discovered.url,
       fileId: discovered.fileId,
+      sourceWidth: discovered.width,
+      sourceHeight: discovered.height,
       source: "printful_file_library",
       backfillMetadata: {
         designSourceFileId: discovered.fileId,

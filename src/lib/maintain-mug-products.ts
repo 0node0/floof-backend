@@ -2,7 +2,11 @@ import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { resolveSourceUrlFromMap } from "./mug-design-source"
-import { importPrintfulProductToMedusa } from "./product-from-design"
+import { formatErrorMessage } from "./serialize-error"
+import {
+  importPrintfulProductToMedusa,
+  type CreateFromDesignResult,
+} from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
 import type { SyncVariantFileReport } from "./printful-mug-sync"
@@ -27,6 +31,8 @@ export type MaintainMugProductsInput = {
   onlyIfGalleryImagesBelow?: number
   /** Original single-sided design URLs keyed by Medusa product id or handle */
   sourceUrls?: Record<string, string>
+  /** Regenerate every mug with a Printful sync id (all 13), ignoring sparse-gallery filter */
+  regenerateAllMugs?: boolean
 }
 
 export type MugProductMaintenanceResult = {
@@ -40,6 +46,8 @@ export type MugProductMaintenanceResult = {
   mockupSkipReason?: string
   mockupScenes?: MugMockupSceneResult[]
   syncVariants?: SyncVariantFileReport[]
+  mugDesignSource?: CreateFromDesignResult["mugDesignSource"]
+  mugWrapLayout?: CreateFromDesignResult["mugWrapLayout"]
   error?: string
 }
 
@@ -170,17 +178,22 @@ export async function maintainMugDesignProducts(
   }
 
   let mugCandidates = all.filter((p) => looksLikeMug(p))
-  const regenList = [
-    ...(input.productIds || []),
-    ...(input.regenerateProducts || []),
-  ].filter(Boolean)
-  if (regenList.length) {
-    mugCandidates = mugCandidates.filter((p) => productMatchesRegenerateList(p, regenList))
-  } else {
+  if (input.regenerateAllMugs) {
     mugCandidates = mugCandidates.filter((p) => p.metadata?.printful_product_id != null)
+    log(`regenerateAllMugs: ${mugCandidates.length} mug(s) with Printful sync`)
+  } else {
+    const regenList = [
+      ...(input.productIds || []),
+      ...(input.regenerateProducts || []),
+    ].filter(Boolean)
+    if (regenList.length) {
+      mugCandidates = mugCandidates.filter((p) => productMatchesRegenerateList(p, regenList))
+    } else {
+      mugCandidates = mugCandidates.filter((p) => p.metadata?.printful_product_id != null)
+    }
   }
 
-  if (input.onlyIfGalleryImagesBelow != null) {
+  if (input.onlyIfGalleryImagesBelow != null && !input.regenerateAllMugs) {
     const threshold = input.onlyIfGalleryImagesBelow
     const before = mugCandidates.length
     mugCandidates = mugCandidates.filter(
@@ -251,7 +264,18 @@ export async function maintainMugDesignProducts(
         base.mockupSkipReason = result.mockupSkipReason
         base.mockupScenes = result.mockupScenes
         base.syncVariants = result.syncVariantFiles
+        base.mugDesignSource = result.mugDesignSource
+        base.mugWrapLayout = result.mugWrapLayout
         base.regenerated = base.mockupTasks.length > 0
+
+        if (result.mugDesignSource) {
+          log(
+            `Design source for ${product.handle}: ${JSON.stringify(result.mugDesignSource)}`
+          )
+        }
+        if (result.mugWrapLayout) {
+          log(`Wrap layout for ${product.handle}: ${JSON.stringify(result.mugWrapLayout)}`)
+        }
 
         if (changed) {
           mockupsRegenerated++
@@ -265,7 +289,7 @@ export async function maintainMugDesignProducts(
         }
         productResults.push(base)
       } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e)
+        const msg = formatErrorMessage(e)
         base.error = msg
         errors.push({ productId: product.id, error: `mockups: ${msg}` })
         productResults.push(base)

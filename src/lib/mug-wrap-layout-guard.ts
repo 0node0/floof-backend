@@ -1,16 +1,22 @@
 import sharp from "sharp"
-import type { MugWrapDimensions } from "./mug-wrap-composite"
+import type { MugWrapCompositePlan, MugWrapDimensions } from "./mug-wrap-composite"
 
-export const MUG_WRAP_MIN_INK_HEIGHT_RATIO = 0.6
 export const MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF = 1
+/** Ink bbox must reach at least this fraction of the planned art size after fit. */
+export const MUG_WRAP_INK_SIZE_TOLERANCE = 0.88
 
 export type MugWrapLayoutValidation = {
   ok: boolean
   reason?: string
+  leftInkWidth: number
   leftInkHeight: number
+  rightInkWidth: number
   rightInkHeight: number
   leftClusters: number
   rightClusters: number
+  halvesIdentical: boolean
+  expectedArtWidth: number
+  expectedArtHeight: number
 }
 
 const INK_ALPHA_THRESHOLD = 28
@@ -21,7 +27,6 @@ function isInkPixel(r: number, g: number, b: number, a: number): boolean {
   return true
 }
 
-/** Count 4-connected ink components in a binary mask (width × height row-major). */
 function countInkClusters(mask: Uint8Array, width: number, height: number): number {
   const visited = new Uint8Array(mask.length)
   let clusters = 0
@@ -38,13 +43,12 @@ function countInkClusters(mask: Uint8Array, width: number, height: number): numb
         const cur = stack.pop()!
         const cy = Math.floor(cur / width)
         const cx = cur - cy * width
-        const neighbors = [
+        for (const [nx, ny] of [
           [cx - 1, cy],
           [cx + 1, cy],
           [cx, cy - 1],
           [cx, cy + 1],
-        ]
-        for (const [nx, ny] of neighbors) {
+        ]) {
           if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
           const ni = ny * width + nx
           if (!mask[ni] || visited[ni]) continue
@@ -57,15 +61,26 @@ function countInkClusters(mask: Uint8Array, width: number, height: number): numb
   return clusters
 }
 
+type HalfInkAnalysis = {
+  inkWidth: number
+  inkHeight: number
+  clusters: number
+  cropRgba: Buffer | null
+  cropWidth: number
+  cropHeight: number
+}
+
 function analyzeHalf(
   rgba: Buffer,
   fullWidth: number,
   height: number,
   xStart: number,
   xEnd: number
-): { inkHeight: number; clusters: number } {
+): HalfInkAnalysis {
   const halfWidth = xEnd - xStart
   const mask = new Uint8Array(halfWidth * height)
+  let minX = halfWidth
+  let maxX = -1
   let minY = height
   let maxY = -1
 
@@ -74,25 +89,79 @@ function analyzeHalf(
       const o = (y * fullWidth + x) * 4
       const ink = isInkPixel(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])
       if (!ink) continue
-      mask[y * halfWidth + (x - xStart)] = 1
+      const lx = x - xStart
+      mask[y * halfWidth + lx] = 1
+      if (lx < minX) minX = lx
+      if (lx > maxX) maxX = lx
       if (y < minY) minY = y
       if (y > maxY) maxY = y
     }
   }
 
+  const inkWidth = maxX >= minX ? maxX - minX + 1 : 0
   const inkHeight = maxY >= minY ? maxY - minY + 1 : 0
   const clusters = countInkClusters(mask, halfWidth, height)
-  return { inkHeight, clusters }
+
+  if (inkWidth <= 0 || inkHeight <= 0) {
+    return {
+      inkWidth: 0,
+      inkHeight: 0,
+      clusters,
+      cropRgba: null,
+      cropWidth: 0,
+      cropHeight: 0,
+    }
+  }
+
+  const cropWidth = inkWidth
+  const cropHeight = inkHeight
+  const crop = Buffer.alloc(cropWidth * cropHeight * 4)
+  for (let y = 0; y < cropHeight; y++) {
+    for (let x = 0; x < cropWidth; x++) {
+      const srcX = xStart + minX + x
+      const srcY = minY + y
+      const so = (srcY * fullWidth + srcX) * 4
+      const di = (y * cropWidth + x) * 4
+      crop[di] = rgba[so]
+      crop[di + 1] = rgba[so + 1]
+      crop[di + 2] = rgba[so + 2]
+      crop[di + 3] = rgba[so + 3]
+    }
+  }
+
+  return {
+    inkWidth,
+    inkHeight,
+    clusters,
+    cropRgba: crop,
+    cropWidth,
+    cropHeight,
+  }
 }
 
-/**
- * Validate a composited mug wrap: each half should have one large ink panel
- * (PR #14 layout). Rejects nested/tiny duplicate art (PR #15/#16 regressions).
- */
+function cropsPixelIdentical(a: HalfInkAnalysis, b: HalfInkAnalysis): boolean {
+  if (!a.cropRgba || !b.cropRgba) return false
+  if (a.cropWidth !== b.cropWidth || a.cropHeight !== b.cropHeight) return false
+  return a.cropRgba.equals(b.cropRgba)
+}
+
 export async function validateMugWrapLayout(
   wrapPng: Buffer,
-  dims: MugWrapDimensions
+  dims: MugWrapDimensions,
+  plan: MugWrapCompositePlan
 ): Promise<MugWrapLayoutValidation> {
+  const base = {
+    expectedArtWidth: plan.artWidth,
+    expectedArtHeight: plan.artHeight,
+    leftInkWidth: 0,
+    leftInkHeight: 0,
+    rightInkWidth: 0,
+    rightInkHeight: 0,
+    leftClusters: 0,
+    rightClusters: 0,
+    halvesIdentical: false,
+  }
+
   const { data, info } = await sharp(wrapPng)
     .ensureAlpha()
     .raw()
@@ -104,78 +173,53 @@ export async function validateMugWrapLayout(
     return {
       ok: false,
       reason: `wrap size ${width}×${height} below expected ${dims.areaWidth}×${dims.areaHeight}`,
-      leftInkHeight: 0,
-      rightInkHeight: 0,
-      leftClusters: 0,
-      rightClusters: 0,
+      ...base,
     }
   }
 
   const mid = Math.floor(width / 2)
   const left = analyzeHalf(data, width, height, 0, mid)
   const right = analyzeHalf(data, width, height, mid, width)
-  const minInkHeight = Math.round(dims.areaHeight * MUG_WRAP_MIN_INK_HEIGHT_RATIO)
+  const halvesIdentical = cropsPixelIdentical(left, right)
 
-  if (left.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
-    return {
-      ok: false,
-      reason: `left half has ${left.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`,
-      leftInkHeight: left.inkHeight,
-      rightInkHeight: right.inkHeight,
-      leftClusters: left.clusters,
-      rightClusters: right.clusters,
-    }
-  }
-  if (right.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
-    return {
-      ok: false,
-      reason: `right half has ${right.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`,
-      leftInkHeight: left.inkHeight,
-      rightInkHeight: right.inkHeight,
-      leftClusters: left.clusters,
-      rightClusters: right.clusters,
-    }
-  }
-  if (left.inkHeight < minInkHeight) {
-    return {
-      ok: false,
-      reason: `left ink height ${left.inkHeight}px < ${minInkHeight}px (${MUG_WRAP_MIN_INK_HEIGHT_RATIO * 100}% of wrap)`,
-      leftInkHeight: left.inkHeight,
-      rightInkHeight: right.inkHeight,
-      leftClusters: left.clusters,
-      rightClusters: right.clusters,
-    }
-  }
-  if (right.inkHeight < minInkHeight) {
-    return {
-      ok: false,
-      reason: `right ink height ${right.inkHeight}px < ${minInkHeight}px (${MUG_WRAP_MIN_INK_HEIGHT_RATIO * 100}% of wrap)`,
-      leftInkHeight: left.inkHeight,
-      rightInkHeight: right.inkHeight,
-      leftClusters: left.clusters,
-      rightClusters: right.clusters,
-    }
-  }
-
-  const totalClusters = left.clusters + right.clusters
-  if (totalClusters > 2) {
-    return {
-      ok: false,
-      reason: `wrap has ${totalClusters} ink clusters (max 2)`,
-      leftInkHeight: left.inkHeight,
-      rightInkHeight: right.inkHeight,
-      leftClusters: left.clusters,
-      rightClusters: right.clusters,
-    }
-  }
-
-  return {
-    ok: true,
+  const result: MugWrapLayoutValidation = {
+    ...base,
+    leftInkWidth: left.inkWidth,
     leftInkHeight: left.inkHeight,
+    rightInkWidth: right.inkWidth,
     rightInkHeight: right.inkHeight,
     leftClusters: left.clusters,
     rightClusters: right.clusters,
+    halvesIdentical,
+    ok: false,
   }
+
+  const minW = Math.round(plan.artWidth * MUG_WRAP_INK_SIZE_TOLERANCE)
+  const minH = Math.round(plan.artHeight * MUG_WRAP_INK_SIZE_TOLERANCE)
+
+  if (left.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
+    result.reason = `left half has ${left.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`
+    return result
+  }
+  if (right.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
+    result.reason = `right half has ${right.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`
+    return result
+  }
+  if (left.inkWidth < minW || left.inkHeight < minH) {
+    result.reason = `left ink ${left.inkWidth}×${left.inkHeight} below planned ${plan.artWidth}×${plan.artHeight} (min ${minW}×${minH})`
+    return result
+  }
+  if (right.inkWidth < minW || right.inkHeight < minH) {
+    result.reason = `right ink ${right.inkWidth}×${right.inkHeight} below planned ${plan.artWidth}×${plan.artHeight} (min ${minW}×${minH})`
+    return result
+  }
+  if (!halvesIdentical) {
+    result.reason = "left and right wrap halves are not pixel-identical (check mirroring or duplicate art)"
+    return result
+  }
+
+  result.ok = true
+  return result
 }
 
 export class MugWrapLayoutError extends Error {
