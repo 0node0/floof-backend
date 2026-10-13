@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest"
 import {
+  buildMedusaVariantUpdatePayload,
   findExistingVariantForPrintfulSync,
   planIdempotentVariantSync,
   printfulSyncVariantSku,
@@ -31,6 +32,20 @@ describe("medusa-printful-variant-sync", () => {
       syncVariantId: 5568638138,
     })
     expect(match?.id).toBe("variant_b")
+  })
+
+  it("omits prices from variant update payloads", () => {
+    const payload = buildMedusaVariantUpdatePayload("variant_1", {
+      title: "ONE SIZE / WHITE",
+      sku: "PF-1",
+      syncVariantId: 1,
+      options: { Size: "ONE SIZE", Color: "WHITE" },
+      prices: [{ amount: 1900, currency_code: "usd" }],
+      metadata: { printful_sync_variant_id: 1 },
+    })
+    expect(payload).not.toHaveProperty("prices")
+    expect(payload.id).toBe("variant_1")
+    expect(payload.sku).toBe("PF-1")
   })
 
   it("plans updates for existing SKUs and creates only missing variants", () => {

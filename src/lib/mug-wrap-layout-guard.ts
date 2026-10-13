@@ -1,9 +1,10 @@
 import sharp from "sharp"
 import type { MugWrapCompositePlan, MugWrapDimensions } from "./mug-wrap-composite"
 
-export const MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF = 1
-/** Ink bbox must reach at least this fraction of the planned art size after fit. */
-export const MUG_WRAP_INK_SIZE_TOLERANCE = 0.88
+/** Ink union bbox must reach at least this fraction of the planned art size. */
+export const MUG_WRAP_MIN_FIT_RATIO = 0.7
+/** How close the ink bbox center must be to the panel center (fraction of half-panel width). */
+export const MUG_WRAP_CENTER_TOLERANCE_RATIO = 0.08
 
 export type MugWrapLayoutValidation = {
   ok: boolean
@@ -12,74 +13,38 @@ export type MugWrapLayoutValidation = {
   leftInkHeight: number
   rightInkWidth: number
   rightInkHeight: number
-  leftClusters: number
-  rightClusters: number
   halvesIdentical: boolean
+  centerSeamInk: boolean
   expectedArtWidth: number
   expectedArtHeight: number
 }
 
 const INK_ALPHA_THRESHOLD = 28
 
-function isInkPixel(r: number, g: number, b: number, a: number): boolean {
+export function isInkPixel(r: number, g: number, b: number, a: number): boolean {
   if (a < INK_ALPHA_THRESHOLD) return false
   if (a < 250 && r > 245 && g > 245 && b > 245) return false
   return true
 }
 
-function countInkClusters(mask: Uint8Array, width: number, height: number): number {
-  const visited = new Uint8Array(mask.length)
-  let clusters = 0
-  const stack: number[] = []
-
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const i = y * width + x
-      if (!mask[i] || visited[i]) continue
-      clusters++
-      stack.push(i)
-      visited[i] = 1
-      while (stack.length) {
-        const cur = stack.pop()!
-        const cy = Math.floor(cur / width)
-        const cx = cur - cy * width
-        for (const [nx, ny] of [
-          [cx - 1, cy],
-          [cx + 1, cy],
-          [cx, cy - 1],
-          [cx, cy + 1],
-        ]) {
-          if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue
-          const ni = ny * width + nx
-          if (!mask[ni] || visited[ni]) continue
-          visited[ni] = 1
-          stack.push(ni)
-        }
-      }
-    }
-  }
-  return clusters
-}
-
-type HalfInkAnalysis = {
+type HalfInkBbox = {
   inkWidth: number
   inkHeight: number
-  clusters: number
+  bboxCenterX: number
+  bboxCenterY: number
   cropRgba: Buffer | null
   cropWidth: number
   cropHeight: number
 }
 
-function analyzeHalf(
+export function analyzeHalfInkBbox(
   rgba: Buffer,
   fullWidth: number,
   height: number,
   xStart: number,
   xEnd: number
-): HalfInkAnalysis {
-  const halfWidth = xEnd - xStart
-  const mask = new Uint8Array(halfWidth * height)
-  let minX = halfWidth
+): HalfInkBbox {
+  let minX = fullWidth
   let maxX = -1
   let minY = height
   let maxY = -1
@@ -89,10 +54,8 @@ function analyzeHalf(
       const o = (y * fullWidth + x) * 4
       const ink = isInkPixel(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])
       if (!ink) continue
-      const lx = x - xStart
-      mask[y * halfWidth + lx] = 1
-      if (lx < minX) minX = lx
-      if (lx > maxX) maxX = lx
+      if (x < minX) minX = x
+      if (x > maxX) maxX = x
       if (y < minY) minY = y
       if (y > maxY) maxY = y
     }
@@ -100,25 +63,27 @@ function analyzeHalf(
 
   const inkWidth = maxX >= minX ? maxX - minX + 1 : 0
   const inkHeight = maxY >= minY ? maxY - minY + 1 : 0
-  const clusters = countInkClusters(mask, halfWidth, height)
 
   if (inkWidth <= 0 || inkHeight <= 0) {
     return {
       inkWidth: 0,
       inkHeight: 0,
-      clusters,
+      bboxCenterX: 0,
+      bboxCenterY: 0,
       cropRgba: null,
       cropWidth: 0,
       cropHeight: 0,
     }
   }
 
+  const bboxCenterX = (minX + maxX) / 2
+  const bboxCenterY = (minY + maxY) / 2
   const cropWidth = inkWidth
   const cropHeight = inkHeight
   const crop = Buffer.alloc(cropWidth * cropHeight * 4)
   for (let y = 0; y < cropHeight; y++) {
     for (let x = 0; x < cropWidth; x++) {
-      const srcX = xStart + minX + x
+      const srcX = minX + x
       const srcY = minY + y
       const so = (srcY * fullWidth + srcX) * 4
       const di = (y * cropWidth + x) * 4
@@ -132,17 +97,46 @@ function analyzeHalf(
   return {
     inkWidth,
     inkHeight,
-    clusters,
+    bboxCenterX,
+    bboxCenterY,
     cropRgba: crop,
     cropWidth,
     cropHeight,
   }
 }
 
-function cropsPixelIdentical(a: HalfInkAnalysis, b: HalfInkAnalysis): boolean {
+export function cropsPixelIdentical(a: HalfInkBbox, b: HalfInkBbox): boolean {
   if (!a.cropRgba || !b.cropRgba) return false
   if (a.cropWidth !== b.cropWidth || a.cropHeight !== b.cropHeight) return false
   return a.cropRgba.equals(b.cropRgba)
+}
+
+export function inkCrossesCenterSeam(
+  rgba: Buffer,
+  fullWidth: number,
+  height: number,
+  mid: number
+): boolean {
+  const seamColumns = [mid - 1, mid].filter((x) => x >= 0 && x < fullWidth)
+  for (let y = 0; y < height; y++) {
+    for (const x of seamColumns) {
+      const o = (y * fullWidth + x) * 4
+      if (isInkPixel(rgba[o], rgba[o + 1], rgba[o + 2], rgba[o + 3])) {
+        return true
+      }
+    }
+  }
+  return false
+}
+
+export function isBboxCenteredOnPanel(
+  bboxCenterX: number,
+  panelCenterX: number,
+  halfPanelWidth: number,
+  toleranceRatio = MUG_WRAP_CENTER_TOLERANCE_RATIO
+): boolean {
+  const tolerance = halfPanelWidth * toleranceRatio
+  return Math.abs(bboxCenterX - panelCenterX) <= tolerance
 }
 
 export async function validateMugWrapLayout(
@@ -157,9 +151,8 @@ export async function validateMugWrapLayout(
     leftInkHeight: 0,
     rightInkWidth: 0,
     rightInkHeight: 0,
-    leftClusters: 0,
-    rightClusters: 0,
     halvesIdentical: false,
+    centerSeamInk: false,
   }
 
   const { data, info } = await sharp(wrapPng)
@@ -178,9 +171,11 @@ export async function validateMugWrapLayout(
   }
 
   const mid = Math.floor(width / 2)
-  const left = analyzeHalf(data, width, height, 0, mid)
-  const right = analyzeHalf(data, width, height, mid, width)
+  const halfPanelWidth = mid
+  const left = analyzeHalfInkBbox(data, width, height, 0, mid)
+  const right = analyzeHalfInkBbox(data, width, height, mid, width)
   const halvesIdentical = cropsPixelIdentical(left, right)
+  const centerSeamInk = inkCrossesCenterSeam(data, width, height, mid)
 
   const result: MugWrapLayoutValidation = {
     ...base,
@@ -188,33 +183,39 @@ export async function validateMugWrapLayout(
     leftInkHeight: left.inkHeight,
     rightInkWidth: right.inkWidth,
     rightInkHeight: right.inkHeight,
-    leftClusters: left.clusters,
-    rightClusters: right.clusters,
     halvesIdentical,
+    centerSeamInk,
     ok: false,
   }
 
-  const minW = Math.round(plan.artWidth * MUG_WRAP_INK_SIZE_TOLERANCE)
-  const minH = Math.round(plan.artHeight * MUG_WRAP_INK_SIZE_TOLERANCE)
+  const minW = Math.round(plan.artWidth * MUG_WRAP_MIN_FIT_RATIO)
+  const minH = Math.round(plan.artHeight * MUG_WRAP_MIN_FIT_RATIO)
 
-  if (left.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
-    result.reason = `left half has ${left.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`
-    return result
-  }
-  if (right.clusters > MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF) {
-    result.reason = `right half has ${right.clusters} ink clusters (max ${MUG_WRAP_MAX_INK_CLUSTERS_PER_HALF})`
+  if (centerSeamInk) {
+    result.reason = "ink crosses the wrap center seam"
     return result
   }
   if (left.inkWidth < minW || left.inkHeight < minH) {
-    result.reason = `left ink ${left.inkWidth}×${left.inkHeight} below planned ${plan.artWidth}×${plan.artHeight} (min ${minW}×${minH})`
+    result.reason = `left artwork bbox ${left.inkWidth}×${left.inkHeight} below planned fit (min ${minW}×${minH}, ${MUG_WRAP_MIN_FIT_RATIO * 100}% of ${plan.artWidth}×${plan.artHeight})`
     return result
   }
   if (right.inkWidth < minW || right.inkHeight < minH) {
-    result.reason = `right ink ${right.inkWidth}×${right.inkHeight} below planned ${plan.artWidth}×${plan.artHeight} (min ${minW}×${minH})`
+    result.reason = `right artwork bbox ${right.inkWidth}×${right.inkHeight} below planned fit (min ${minW}×${minH})`
+    return result
+  }
+  if (
+    !isBboxCenteredOnPanel(left.bboxCenterX, plan.frontCenterX, halfPanelWidth)
+  ) {
+    result.reason = `left artwork bbox not centered on front panel (center x=${left.bboxCenterX.toFixed(1)}, expected ≈${plan.frontCenterX})`
+    return result
+  }
+  if (!isBboxCenteredOnPanel(right.bboxCenterX, plan.backCenterX, halfPanelWidth)) {
+    result.reason = `right artwork bbox not centered on back panel (center x=${right.bboxCenterX.toFixed(1)}, expected ≈${plan.backCenterX})`
     return result
   }
   if (!halvesIdentical) {
-    result.reason = "left and right wrap halves are not pixel-identical (check mirroring or duplicate art)"
+    result.reason =
+      "left and right wrap halves are not pixel-identical (check mirroring or duplicate art)"
     return result
   }
 
