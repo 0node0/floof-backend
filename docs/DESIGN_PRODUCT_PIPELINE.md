@@ -38,7 +38,7 @@ x-floof-admin-key: <same secret>
 
 Set `R2_*` env vars for **durable** design uploads (recommended). Otherwise set `MEDUSA_BACKEND_URL` to the public backend URL so Printful can fetch `/floof/design-files/…` (not durable across redeploys).
 
-Mockup regen always uses **Printful file library** URLs (`files.cdn.printful.com/files/…`) from sync variants or `GET /files/{id}` — never ephemeral Floof staging URLs.
+Mockup regen uses durable Printful URLs. **Mug wrap regen** uses only original single-sided art (`metadata.designSourceFileId`, job `sourceUrls`, or file-library backfill) — never the sync variant’s current wrap file. Wrap composites are validated before updating variants.
 
 ## API
 

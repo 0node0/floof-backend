@@ -72,6 +72,15 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
           : body.onlyIfGalleryImagesBelow != null
             ? Number(body.onlyIfGalleryImagesBelow)
             : undefined,
+      sourceUrls:
+        body.sourceUrls && typeof body.sourceUrls === "object" && !Array.isArray(body.sourceUrls)
+          ? Object.fromEntries(
+              Object.entries(body.sourceUrls as Record<string, unknown>).map(([k, v]) => [
+                k,
+                String(v),
+              ])
+            )
+          : undefined,
     }
     const runSync = body.sync === true || body.sync === "true" || body.async === false
 
