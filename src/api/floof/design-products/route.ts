@@ -61,6 +61,11 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
       productIds: Array.isArray(body.productIds)
         ? body.productIds.map(String)
         : undefined,
+      regenerateProducts: Array.isArray(body.regenerateProducts)
+        ? body.regenerateProducts.map(String)
+        : Array.isArray(body.productNames)
+          ? body.productNames.map(String)
+          : undefined,
       onlyIfGalleryImagesBelow:
         body.onlySparseGalleries === true || body.onlySparseGalleries === "true"
           ? 2

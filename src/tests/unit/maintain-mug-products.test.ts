@@ -1,7 +1,18 @@
 import { describe, it, expect } from "vitest"
-import { countProductGalleryImages, looksLikeMug } from "../../lib/maintain-mug-products"
+import {
+  countProductGalleryImages,
+  looksLikeMug,
+  productMatchesRegenerateList,
+} from "../../lib/maintain-mug-products"
 
 describe("maintain-mug-products", () => {
+  it("matches regenerate list by id, handle, or title", () => {
+    const p = { id: "prod_1", handle: "pro-snuggler", title: "Professional Snuggler" }
+    expect(productMatchesRegenerateList(p, ["Professional Snuggler"])).toBe(true)
+    expect(productMatchesRegenerateList(p, ["pro-snuggler"])).toBe(true)
+    expect(productMatchesRegenerateList(p, ["prod_1"])).toBe(true)
+  })
+
   it("counts unique gallery URLs", () => {
     expect(countProductGalleryImages({ images: [{ url: "a" }, { url: "a" }] })).toBe(1)
     expect(countProductGalleryImages({ images: [{ url: "a" }, { url: "b" }] })).toBe(2)
