@@ -31,7 +31,11 @@ import {
   type MockupProductKind,
 } from "./printful-mockup-config"
 import { drinkwareMockupBatchesFromAvailable } from "./mug-mockup-scenes"
-import { createDrinkwareWrapPrintfulFile, type DrinkwareWrapFile } from "./drinkware-wrap-file"
+import {
+  createDrinkwareWrapPrintfulFile,
+  type DrinkwareWrapBuildResult,
+  type DrinkwareWrapFile,
+} from "./drinkware-wrap-file"
 import {
   buildSyncVariantFileReports,
   updateSyncVariantsPrintFile,
@@ -48,7 +52,8 @@ import {
   resolveMugDesignSource,
   type MugDesignSourceResolution,
 } from "./mug-design-source"
-import { MugWrapLayoutError } from "./mug-wrap-layout-guard"
+import { MugWrapLayoutError, type MugWrapLayoutValidation } from "./mug-wrap-layout-guard"
+import { formatErrorMessage } from "./serialize-error"
 import { MugWrapSourceRefusedError } from "./mug-wrap-source-art"
 import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene, sceneKeyFromMockupTitle } from "./mockup-scene-dedupe"
@@ -159,6 +164,14 @@ export type CreateFromDesignResult = {
   mockupSkipReason?: string
   syncVariantFiles?: SyncVariantFileReport[]
   imagesChanged?: boolean
+  mugDesignSource?: {
+    source: string
+    fileId?: number
+    url: string
+    width?: number
+    height?: number
+  }
+  mugWrapLayout?: MugWrapLayoutValidation
   logs: string[]
 }
 
@@ -789,6 +802,7 @@ export async function importPrintfulProductToMedusa(
   let mockupSkipReason: string | undefined
   let syncVariantFiles: SyncVariantFileReport[] = []
   let imagesChanged = false
+  let mugWrapLayout: MugWrapLayoutValidation | undefined
 
   const catalogProductId = resolveCatalogProductIdForImport(opts, syncVariants, title)
 
@@ -840,6 +854,15 @@ export async function importPrintfulProductToMedusa(
         return undefined
       }
       designSourceBackfill = mugDesignSourceResolution.backfillMetadata
+      log(
+        `Mug design source: ${JSON.stringify({
+          source: mugDesignSourceResolution.source,
+          fileId: mugDesignSourceResolution.fileId,
+          url: mugDesignSourceResolution.url.slice(0, 120),
+          width: mugDesignSourceResolution.sourceWidth,
+          height: mugDesignSourceResolution.sourceHeight,
+        })}`
+      )
       return mugDesignSourceResolution.url
     }
     return resolveDurablePrintfulDesignUrl(client, syncVariants, {
@@ -879,7 +902,7 @@ export async function importPrintfulProductToMedusa(
         mockupProductKind = "drinkware"
       }
 
-      let drinkwareWrap: DrinkwareWrapFile | undefined
+      let drinkwareWrap: DrinkwareWrapBuildResult | undefined
       if (mockupProductKind === "drinkware") {
         try {
           drinkwareWrap = await withThrottledRetries(
@@ -915,6 +938,7 @@ export async function importPrintfulProductToMedusa(
           }
         }
         if (drinkwareWrap) {
+          mugWrapLayout = drinkwareWrap.layoutValidation
           const refreshed = await client.get<any>(`/store/products/${printfulProductId}`)
           const refreshedVariants: any[] = refreshed.sync_variants || syncVariants
           syncVariantFiles = buildSyncVariantFileReports(
@@ -985,8 +1009,8 @@ export async function importPrintfulProductToMedusa(
       if (!mockupTasks.length && mockupSkipReason) {
         log(`No mockup tasks for Printful #${printfulProductId}: ${mockupSkipReason}`)
       }
-    } catch (e: any) {
-      mockupSkipReason = e.message || String(e)
+    } catch (e: unknown) {
+      mockupSkipReason = formatErrorMessage(e)
       log(`Regenerate mockups failed: ${mockupSkipReason}`)
     }
   }
@@ -1099,10 +1123,11 @@ export async function importPrintfulProductToMedusa(
         title: cleanedTitle,
       }
       log(`Updated product ${existingProduct!.handle}`)
-    } catch (e: any) {
-      log(`Medusa gallery replace failed: ${e.message}`)
+    } catch (e: unknown) {
+      const msg = formatErrorMessage(e)
+      log(`Medusa gallery replace failed: ${msg}`)
       throw new Error(
-        `Found product ${existingProduct!.handle} but could not update images: ${e.message}`
+        `Found product ${existingProduct!.handle} but could not update images: ${msg}`
       )
     }
   }
@@ -1139,6 +1164,16 @@ export async function importPrintfulProductToMedusa(
     mockupSkipReason,
     syncVariantFiles,
     imagesChanged,
+    mugDesignSource: mugDesignSourceResolution
+      ? {
+          source: mugDesignSourceResolution.source,
+          fileId: mugDesignSourceResolution.fileId,
+          url: mugDesignSourceResolution.url,
+          width: mugDesignSourceResolution.sourceWidth,
+          height: mugDesignSourceResolution.sourceHeight,
+        }
+      : undefined,
+    mugWrapLayout,
     logs,
   }
 }

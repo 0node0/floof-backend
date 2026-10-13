@@ -81,6 +81,8 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
               ])
             )
           : undefined,
+      regenerateAllMugs:
+        body.regenerateAllMugs === true || body.regenerateAllMugs === "true",
     }
     const runSync = body.sync === true || body.sync === "true" || body.async === false
 

@@ -5,6 +5,7 @@ import {
   compositeMugWrapPng,
   mugWrapArtPixelSize,
   mugWrapPanelCenters,
+  planMugWrapComposite,
 } from "../../lib/mug-wrap-composite"
 
 describe("mug-wrap-composite", () => {
@@ -26,6 +27,16 @@ describe("mug-wrap-composite", () => {
       left: 0,
       top: 0,
     })
+  })
+
+  it("sizes wide art to half-panel height binding", () => {
+    const plan = planMugWrapComposite(
+      { areaWidth: 2700, areaHeight: 1050 },
+      1200,
+      280
+    )
+    expect(plan.artWidth).toBeGreaterThan(plan.artHeight)
+    expect(plan.artHeight).toBeLessThanOrEqual(Math.round(1050 * 0.85))
   })
 
   it("composites two panels onto a wrap canvas", async () => {
