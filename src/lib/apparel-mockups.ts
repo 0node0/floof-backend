@@ -47,6 +47,8 @@ export type ApparelMockupPrintInput = {
   designSourceUrl: string
   printPosition: ApparelPrintPosition
   printAreaUrl?: string
+  artworkWidth?: number
+  artworkHeight?: number
 }
 
 export class ApparelMockupValidationError extends Error {
@@ -298,6 +300,8 @@ export async function generateApparelPlacementMockups(opts: {
       placement,
       designSourceUrl: printFile.designSourceUrl,
       printPosition: printFile.printPosition,
+      artworkWidth: printFile.artworkWidth,
+      artworkHeight: printFile.artworkHeight,
     })
     const areaW = Number(filePayload.position.area_width)
     const areaH = Number(filePayload.position.area_height)

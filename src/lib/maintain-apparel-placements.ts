@@ -434,7 +434,7 @@ export async function maintainApparelPlacements(
       }
 
       const metaSource = readDesignSourceFromMetadata(product.metadata)
-      const mockupArtworkUrl = await resolveArtworkUrlForMockup(
+      const mockupArtwork = await resolveArtworkUrlForMockup(
         client,
         designSource.url,
         designSource.fileId ?? metaSource.fileId,
@@ -445,9 +445,11 @@ export async function maintainApparelPlacements(
         const area = printAreaByPlacement.get(p.placement)
         return {
           placement: p.placement,
-          designSourceUrl: mockupArtworkUrl,
+          designSourceUrl: mockupArtwork.url,
           printPosition: p.position,
           printAreaUrl: area?.url,
+          artworkWidth: mockupArtwork.width ?? designSource.sourceWidth,
+          artworkHeight: mockupArtwork.height ?? designSource.sourceHeight,
         }
       })
 

@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest"
 import {
   buildApparelMockupFilePayload,
+  isArtworkLargeEnoughForMockup,
   isFullBleedMockupPosition,
-  isPreviewArtworkUrl,
   mockupCreateOptionsForPlacement,
+  rejectArtworkForMockup,
+  urlLooksLikePreviewArtworkPath,
 } from "../../lib/printful-mockup-request"
 import { buildApparelFullBleedPosition } from "../../lib/apparel-placement-layout"
 
@@ -16,6 +18,9 @@ describe("printful-mockup-request", () => {
     top: 300,
     left: 619,
   }
+
+  const previewNamedFullSize =
+    "https://files.printful.com/files/abc/foo_preview.png"
 
   it("uses design artwork URL and art-box position (Printful mockup-generator contract)", () => {
     const payload = buildApparelMockupFilePayload({
@@ -31,15 +36,46 @@ describe("printful-mockup-request", () => {
     expect(isFullBleedMockupPosition(payload.position)).toBe(false)
   })
 
-  it("rejects preview artwork URLs for mockup payloads", () => {
-    expect(isPreviewArtworkUrl("https://cdn.example.com/foo_preview.png")).toBe(true)
+  it("accepts _preview.png URLs when Printful file dimensions are large enough", () => {
+    expect(urlLooksLikePreviewArtworkPath(previewNamedFullSize)).toBe(true)
+    expect(isArtworkLargeEnoughForMockup({ width: 4500, height: 4424 })).toBe(true)
+    expect(rejectArtworkForMockup(previewNamedFullSize, { width: 4500, height: 4424 })).toBe(
+      null
+    )
+    const payload = buildApparelMockupFilePayload({
+      placement: "front",
+      designSourceUrl: previewNamedFullSize,
+      printPosition: leftChest,
+      artworkWidth: 4500,
+      artworkHeight: 4424,
+    })
+    expect(payload.image_url).toBe(previewNamedFullSize)
+  })
+
+  it("rejects preview-looking URLs when dimensions are actually small", () => {
+    expect(rejectArtworkForMockup(previewNamedFullSize, { width: 800, height: 800 })).toMatch(
+      /too small/i
+    )
     expect(() =>
       buildApparelMockupFilePayload({
         placement: "front",
-        designSourceUrl: "https://cdn.example.com/foo_preview.png",
+        designSourceUrl: previewNamedFullSize,
+        printPosition: leftChest,
+        artworkWidth: 800,
+        artworkHeight: 800,
+      })
+    ).toThrow(/too small/i)
+  })
+
+  it("rejects preview-looking URLs without known dimensions", () => {
+    expect(rejectArtworkForMockup(previewNamedFullSize)).toMatch(/preview/i)
+    expect(() =>
+      buildApparelMockupFilePayload({
+        placement: "front",
+        designSourceUrl: previewNamedFullSize,
         printPosition: leftChest,
       })
-    ).toThrow(/preview/)
+    ).toThrow(/preview/i)
   })
 
   it("requests Back option for back placement mockups", () => {
