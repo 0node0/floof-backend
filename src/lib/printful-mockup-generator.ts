@@ -4,8 +4,9 @@
  */
 
 import type PrintfulApiClient from "../modules/printful/client"
+import { throttlePrintfulMockupCreateTask } from "./printful-mockup-rate-limit"
 
-export type MockupPrintPosition = Record<string, number>
+export type MockupPrintPosition = Record<string, number | boolean>
 
 export type MockupCreateTaskRequest = {
   variant_ids: number[]
@@ -47,10 +48,18 @@ export type PrintfulMockupTaskResult = {
 export type MockupTaskRunLog = {
   taskKey: string
   request: MockupCreateTaskRequest
+  createResponse?: PrintfulMockupTaskResult
+  pollResponse?: PrintfulMockupTaskResult
   status: string
   error?: string
   mockupUrls: string[]
   pollAttempts: number
+  validation?: {
+    pixelDiffRatio: number
+    passed: boolean
+    comparedToBlankUrl?: string
+  }
+  usedTemplateFallback?: boolean
 }
 
 export type PollMockupTaskOptions = {
@@ -193,6 +202,8 @@ export async function runPrintfulMockupTask(
       `variants=${JSON.stringify(request.variant_ids)}`
   )
 
+  await throttlePrintfulMockupCreateTask()
+
   const created = await client.post<PrintfulMockupTaskResult>(
     `/mockup-generator/create-task/${catalogProductId}`,
     request
@@ -222,6 +233,8 @@ export async function runPrintfulMockupTask(
   return {
     taskKey,
     request,
+    createResponse: created,
+    pollResponse: polled.result,
     status: st,
     error: polled.result.error,
     mockupUrls,

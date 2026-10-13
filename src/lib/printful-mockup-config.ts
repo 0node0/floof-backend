@@ -40,6 +40,7 @@ export type LayoutTemplate = {
   print_area_left?: number
   is_template_on_front?: boolean
   placement?: string
+  image_url?: string
 }
 
 export type MockupTemplatesResult = {

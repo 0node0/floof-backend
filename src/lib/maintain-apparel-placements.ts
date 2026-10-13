@@ -24,9 +24,12 @@ import { updateSyncVariantsPrintFilesIdempotent } from "./printful-apparel-sync"
 import { sleep } from "./async-sleep"
 import { withPrintfulRetries } from "./printful-retry"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
+import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
 
 export type MaintainApparelPlacementsInput = {
   dryRun?: boolean
+  /** Regenerate mockups and Medusa gallery only; do not rebuild or sync print files. */
+  mockupsOnly?: boolean
   layouts?: Record<string, ApparelPlacementLayout>
   productIds?: string[]
   products?: Array<{ productId: string; layout: ApparelPlacementLayout }>
@@ -148,6 +151,54 @@ function resolveSourceUrlFromMap(
   if (map[product.id]) return map[product.id]
   if (map[product.handle]) return map[product.handle]
   return undefined
+}
+
+type SyncVariantFileRef = { id?: number; type?: string }
+
+async function loadPrintAreaUrlsFromSyncVariants(
+  client: PrintfulApiClient,
+  syncVariants: Array<{ files?: SyncVariantFileRef[] }>,
+  planned: ApparelPlacementPlanEntry[],
+  log: (m: string) => void
+): Promise<
+  Array<{
+    placement: string
+    syncFileType: string
+    url: string
+    position: Record<string, number>
+    positionInches?: ApparelPlacementPlanEntry["inches"]
+  }>
+> {
+  const sv = syncVariants[0]
+  const files = sv?.files || []
+  const out: Array<{
+    placement: string
+    syncFileType: string
+    url: string
+    position: Record<string, number>
+    positionInches?: ApparelPlacementPlanEntry["inches"]
+  }> = []
+
+  for (const p of planned) {
+    const ref = files.find((f) => f.type === p.syncFileType)
+    if (!ref?.id) {
+      throw new Error(
+        `Sync variant missing print file type=${p.syncFileType} for placement=${p.placement}`
+      )
+    }
+    const full = await resolveFullPrintfulFileUrlById(client, ref.id, log)
+    if (!full?.url) {
+      throw new Error(`Could not resolve Printful file id=${ref.id} for ${p.placement}`)
+    }
+    out.push({
+      placement: p.placement,
+      syncFileType: p.syncFileType,
+      url: full.url,
+      position: p.position,
+      positionInches: p.inches,
+    })
+  }
+  return out
 }
 
 export async function maintainApparelPlacements(
@@ -282,6 +333,7 @@ export async function maintainApparelPlacements(
       }
 
       base.prices = await loadMedusaVariantPrices(container, product.id)
+      const mockupsOnly = input.mockupsOnly === true
 
       const designSource = await withPrintfulRetries(
         "Resolve design source",
@@ -306,46 +358,88 @@ export async function maintainApparelPlacements(
         )
       }
 
-      const printFiles = await buildApparelPrintFilesForPlacements(
-        client,
-        designSource.url,
-        layoutPlan.placements,
-        log
-      )
-      base.printFiles = printFiles.map((f) => {
-        const planned = layoutPlan.planned.find((p) => p.placement === f.placement)
+      let printAreaByPlacement = new Map<
+        string,
+        { url: string; position: Record<string, number>; syncFileType: string }
+      >()
+
+      if (mockupsOnly) {
+        log(`mockupsOnly: loading existing Printful print files for ${product.handle}`)
+        const existing = await loadPrintAreaUrlsFromSyncVariants(
+          client,
+          syncVariants,
+          layoutPlan.planned,
+          log
+        )
+        base.printFiles = existing.map((row) => ({
+          placement: row.placement,
+          syncFileType: row.syncFileType,
+          url: row.url,
+          position: row.position,
+          positionInches: row.positionInches,
+        }))
+        for (const row of existing) {
+          printAreaByPlacement.set(row.placement, {
+            url: row.url,
+            position: row.position,
+            syncFileType: row.syncFileType,
+          })
+        }
+      } else {
+        const printFiles = await buildApparelPrintFilesForPlacements(
+          client,
+          designSource.url,
+          layoutPlan.placements,
+          log
+        )
+        base.printFiles = printFiles.map((f) => {
+          const planned = layoutPlan.planned.find((p) => p.placement === f.placement)
+          return {
+            placement: f.placement,
+            syncFileType: f.syncFileType,
+            fileId: f.fileId,
+            url: f.cdnUrl,
+            position: f.position,
+            positionInches: planned?.inches,
+          }
+        })
+
+        const syncFileRefs = printFiles
+          .filter((f) => f.fileId != null)
+          .map((f) => ({
+            fileId: f.fileId!,
+            type: f.syncFileType,
+          }))
+        const syncStats = await updateSyncVariantsPrintFilesIdempotent(
+          client,
+          printfulId,
+          syncVariants,
+          syncFileRefs,
+          log
+        )
+        base.syncVariantsUpdated = syncStats.updated
+
+        for (const f of printFiles) {
+          const url = f.cdnUrl || f.mockupUrl
+          if (url) {
+            printAreaByPlacement.set(f.placement, {
+              url,
+              position: f.position,
+              syncFileType: f.syncFileType,
+            })
+          }
+        }
+      }
+
+      const mockupInputs = layoutPlan.planned.map((p) => {
+        const area = printAreaByPlacement.get(p.placement)
         return {
-          placement: f.placement,
-          syncFileType: f.syncFileType,
-          fileId: f.fileId,
-          url: f.cdnUrl,
-          position: f.position,
-          positionInches: planned?.inches,
+          placement: p.placement,
+          designSourceUrl: designSource.url,
+          printPosition: p.position,
+          printAreaUrl: area?.url,
         }
       })
-
-      const syncFileRefs = printFiles
-        .filter((f) => f.fileId != null)
-        .map((f) => ({
-          fileId: f.fileId!,
-          type: f.syncFileType,
-        }))
-      const syncStats = await updateSyncVariantsPrintFilesIdempotent(
-        client,
-        printfulId,
-        syncVariants,
-        syncFileRefs,
-        log
-      )
-      base.syncVariantsUpdated = syncStats.updated
-
-      const mockupInputs = printFiles
-        .filter((f) => f.mockupUrl || f.cdnUrl)
-        .map((f) => ({
-          placement: f.placement,
-          mockupUrl: f.mockupUrl || f.cdnUrl!,
-          mockupPosition: f.mockupPosition,
-        }))
 
       const mockupResult = await generateApparelPlacementMockups({
         client,
@@ -368,13 +462,15 @@ export async function maintainApparelPlacements(
         base.imagesChanged = replaced.imagesChanged
       }
 
-      await syncMedusaProductVariantsUpdateOnly(
-        container,
-        product.id,
-        syncVariants,
-        syncVariants[0]?.retail_price || "28.00",
-        log
-      )
+      if (!mockupsOnly) {
+        await syncMedusaProductVariantsUpdateOnly(
+          container,
+          product.id,
+          syncVariants,
+          syncVariants[0]?.retail_price || "28.00",
+          log
+        )
+      }
 
       const backfill = designSource.backfillMetadata
       if (backfill?.designSourceFileId || backfill?.designSourceUrl) {
