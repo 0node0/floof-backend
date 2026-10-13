@@ -144,6 +144,7 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
 
     const apparelInput = {
       dryRun: body.dryRun === true || body.dryRun === "true",
+      mockupsOnly: body.mockupsOnly === true || body.mockupsOnly === "true",
       productIds: Array.isArray(body.productIds)
         ? body.productIds.map(String)
         : undefined,

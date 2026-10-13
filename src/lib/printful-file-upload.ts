@@ -8,16 +8,17 @@ export type PrintfulUploadedFile = {
   cdnUrl: string
 }
 
-/** Stage PNG publicly, register with Printful file library, return file id + CDN URL. */
-export async function uploadPngToPrintfulFileLibrary(
+/** Stage image publicly, register with Printful file library, return file id + CDN URL. */
+export async function uploadBinaryToPrintfulFileLibrary(
   client: PrintfulApiClient,
-  png: Buffer,
+  buffer: Buffer,
   filename: string,
+  contentType: "image/png" | "image/jpeg",
   log?: (m: string) => void
 ): Promise<PrintfulUploadedFile> {
   const id = await stageDesignFile({
-    buffer: png,
-    contentType: "image/png",
+    buffer,
+    contentType,
     filename,
   })
   const publicUrl = publicDesignUrl(id)
@@ -50,4 +51,14 @@ export async function uploadPngToPrintfulFileLibrary(
     await sleep(1000)
   }
   throw new Error(`Printful file ${fileId} timed out`)
+}
+
+/** Stage PNG publicly, register with Printful file library, return file id + CDN URL. */
+export async function uploadPngToPrintfulFileLibrary(
+  client: PrintfulApiClient,
+  png: Buffer,
+  filename: string,
+  log?: (m: string) => void
+): Promise<PrintfulUploadedFile> {
+  return uploadBinaryToPrintfulFileLibrary(client, png, filename, "image/png", log)
 }
