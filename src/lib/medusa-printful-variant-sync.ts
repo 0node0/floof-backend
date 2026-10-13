@@ -51,6 +51,28 @@ export type VariantSyncPlan = {
   toCreate: PrintfulBackedMedusaVariant[]
 }
 
+/** Updates must not include prices — Medusa storefront prices stay as configured. */
+export function buildMedusaVariantUpdatePayload(
+  existingId: string,
+  variant: PrintfulBackedMedusaVariant
+): {
+  id: string
+  title: string
+  sku: string
+  options: { Size: string; Color: string }
+  manage_inventory: boolean
+  metadata: PrintfulBackedMedusaVariant["metadata"]
+} {
+  return {
+    id: existingId,
+    title: variant.title,
+    sku: variant.sku,
+    options: variant.options,
+    manage_inventory: false,
+    metadata: variant.metadata,
+  }
+}
+
 export function planIdempotentVariantSync(
   existing: MedusaVariantRef[],
   desired: PrintfulBackedMedusaVariant[]
@@ -245,15 +267,9 @@ export async function syncMedusaProductVariantsIdempotent(
         products: [
           {
             id: productId,
-            variants: plan.toUpdate.map(({ existingId, variant }) => ({
-              id: existingId,
-              title: variant.title,
-              sku: variant.sku,
-              options: variant.options,
-              prices: variant.prices,
-              manage_inventory: false,
-              metadata: variant.metadata,
-            })),
+            variants: plan.toUpdate.map(({ existingId, variant }) =>
+              buildMedusaVariantUpdatePayload(existingId, variant)
+            ),
           },
         ],
       } as any,

@@ -27,6 +27,6 @@ After maintenance runs, check job logs for `Discovered design source from file l
 
 ## Layout guard
 
-After compositing, each half must have one ink cluster, match the planned 85% half-panel fit, and be **pixel-identical** (no mirrored back). Failures skip sync variant and gallery updates.
+After compositing, each half uses a **whole-artwork ink bounding box** (multi-part designs OK): bbox centered on its panel, at least ~70% of the planned fit, **pixel-identical** halves, and no ink on the center seam. Failures skip sync variant and gallery updates.
 
 Design sources must use Printful `GET /files/{id}` full `url`, not preview thumbnails (pass `designSourceFileId` when using `sourceUrls`).
