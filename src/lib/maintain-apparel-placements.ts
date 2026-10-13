@@ -340,10 +340,10 @@ export async function maintainApparelPlacements(
       base.syncVariantsUpdated = syncStats.updated
 
       const mockupInputs = printFiles
-        .filter((f) => f.cdnUrl)
+        .filter((f) => f.mockupUrl || f.cdnUrl)
         .map((f) => ({
           placement: f.placement,
-          cdnUrl: f.cdnUrl!,
+          mockupUrl: f.mockupUrl || f.cdnUrl!,
           mockupPosition: f.mockupPosition,
         }))
 

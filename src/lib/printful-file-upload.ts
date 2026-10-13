@@ -1,6 +1,7 @@
 import type PrintfulApiClient from "../modules/printful/client"
 import { publicDesignUrl, stageDesignFile } from "./design-staging"
 import { sleep } from "./async-sleep"
+import { pickFullResolutionPrintfulFileUrl } from "./printful-file-url"
 
 export type PrintfulUploadedFile = {
   fileId: number
@@ -40,7 +41,7 @@ export async function uploadPngToPrintfulFileLibrary(
     }>(`/files/${fileId}`)
     const st = String(f.status || "").toLowerCase()
     if (st === "ok" || st === "ready") {
-      const cdn = f.preview_url || f.url || f.thumbnail_url
+      const cdn = pickFullResolutionPrintfulFileUrl(f)
       if (cdn) return { fileId, cdnUrl: cdn }
     }
     if (st === "failed" || st === "error") {

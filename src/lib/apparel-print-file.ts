@@ -1,7 +1,9 @@
 import sharp from "sharp"
 import type PrintfulApiClient from "../modules/printful/client"
+import { trimTransparentPng, scaleToFitBox } from "./apparel-art-prep"
 import { fetchAndAssertSingleSidedDesignPng } from "./mug-design-source"
 import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
+import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
 import {
   buildApparelFullBleedPosition,
   clampPrintPosition,
@@ -13,36 +15,36 @@ export type ApparelCompositedPrintFile = {
   placement: string
   syncFileType: string
   position: ApparelPrintPosition
+  /** Full-area composited PNG for mockups (same bytes as sync print file). */
   mockupPosition: ApparelPrintPosition
   fileId?: number
   cdnUrl?: string
+  mockupUrl?: string
 }
 
 export async function compositeDesignIntoPrintArea(
   designPng: Buffer,
   position: ApparelPrintPosition
-): Promise<Buffer> {
+): Promise<{ png: Buffer; renderedWidth: number; renderedHeight: number }> {
   const box = clampPrintPosition(position)
   const areaW = box.area_width
   const areaH = box.area_height
   const boxW = box.width
   const boxH = box.height
-  const meta = await sharp(designPng).metadata()
+
+  const trimmed = await trimTransparentPng(designPng)
+  const meta = await sharp(trimmed).metadata()
   const srcW = Math.max(1, meta.width || 1)
   const srcH = Math.max(1, meta.height || 1)
-  const scale = Math.min(boxW / srcW, boxH / srcH, 1)
-  const w = Math.max(1, Math.min(Math.round(srcW * scale), areaW))
-  const h = Math.max(1, Math.min(Math.round(srcH * scale), areaH))
-  const resized = await sharp(designPng)
-    .resize(w, h, { fit: "inside", withoutEnlargement: false })
-    .png()
-    .toBuffer()
+  const { width: w, height: h } = scaleToFitBox(srcW, srcH, boxW, boxH)
+  const resized = await sharp(trimmed).resize(w, h, { fit: "fill" }).png().toBuffer()
+
   let left = box.left + Math.round((boxW - w) / 2)
   let top = box.top + Math.round((boxH - h) / 2)
   left = Math.max(0, Math.min(left, areaW - w))
   top = Math.max(0, Math.min(top, areaH - h))
 
-  return sharp({
+  const png = await sharp({
     create: {
       width: areaW,
       height: areaH,
@@ -53,6 +55,8 @@ export async function compositeDesignIntoPrintArea(
     .composite([{ input: resized, left, top }])
     .png()
     .toBuffer()
+
+  return { png, renderedWidth: w, renderedHeight: h }
 }
 
 export async function buildApparelPrintFilesForPlacements(
@@ -81,13 +85,15 @@ export async function buildApparelPrintFilesForPlacements(
       continue
     }
 
-    const compositePng = await compositeDesignIntoPrintArea(designPng!, position)
+    const { png: compositePng } = await compositeDesignIntoPrintArea(designPng!, position)
     const uploaded = await uploadPngToPrintfulFileLibrary(
       client,
       compositePng,
       `apparel-${spec.placement}-${position.area_width}x${position.area_height}.png`,
       log
     )
+    const full = await resolveFullPrintfulFileUrlById(client, uploaded.fileId, log)
+    const mockupUrl = full?.url || uploaded.cdnUrl
     results.push({
       placement: spec.placement,
       syncFileType: spec.syncFileType,
@@ -95,9 +101,10 @@ export async function buildApparelPrintFilesForPlacements(
       mockupPosition,
       fileId: uploaded.fileId,
       cdnUrl: uploaded.cdnUrl,
+      mockupUrl,
     })
     log?.(
-      `Apparel print file ${spec.placement}: fileId=${uploaded.fileId} box=${JSON.stringify(position)}`
+      `Apparel print file ${spec.placement}: fileId=${uploaded.fileId} box=${JSON.stringify(position)} mockupUrl=${mockupUrl.slice(0, 72)}`
     )
   }
 
