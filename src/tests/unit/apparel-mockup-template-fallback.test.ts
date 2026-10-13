@@ -33,12 +33,36 @@ describe("apparel-mockup-template-fallback", () => {
       image_url: "https://example.com/template.jpg",
     }
     const printPng = await sharp({
-      create: { width: 10, height: 10, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+      create: {
+        width: 1800,
+        height: 2400,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      },
     })
+      .composite([
+        {
+          input: await sharp({
+            create: { width: 450, height: 450, channels: 4, background: { r: 255, g: 0, b: 0, alpha: 1 } },
+          })
+            .png()
+            .toBuffer(),
+          left: 100,
+          top: 200,
+        },
+      ])
       .png()
       .toBuffer()
 
-    const jpeg = await compositePrintAreaOntoLayoutTemplate(template, printPng)
+    const printPosition = {
+      area_width: 1800,
+      area_height: 2400,
+      width: 450,
+      height: 450,
+      left: 100,
+      top: 200,
+    }
+    const jpeg = await compositePrintAreaOntoLayoutTemplate(template, printPng, printPosition)
     const meta = await sharp(jpeg).metadata()
     expect(meta.width).toBe(100)
     expect(meta.height).toBe(50)
