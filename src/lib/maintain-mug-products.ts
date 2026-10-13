@@ -5,6 +5,7 @@ import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
 import type { SyncVariantFileReport } from "./printful-mug-sync"
+import type { MugMockupSceneResult } from "./mug-mockup-scene-runner"
 import { sleep } from "./async-sleep"
 
 export type MaintainMugProductsInput = {
@@ -16,6 +17,11 @@ export type MaintainMugProductsInput = {
   productIds?: string[]
   /** Dry run — log actions only */
   dryRun?: boolean
+  /**
+   * Only regenerate mugs whose Medusa gallery has fewer than this many images.
+   * Use `2` to target mugs stuck with a single lifestyle shot.
+   */
+  onlyIfGalleryImagesBelow?: number
 }
 
 export type MugProductMaintenanceResult = {
@@ -27,6 +33,7 @@ export type MugProductMaintenanceResult = {
   gallery: string[]
   mockupTasks: MockupTaskRunLog[]
   mockupSkipReason?: string
+  mockupScenes?: MugMockupSceneResult[]
   syncVariants?: SyncVariantFileReport[]
   error?: string
 }
@@ -54,6 +61,17 @@ function mugCatalogIdsFromEnv(): Set<string> {
       .map((s) => s.trim())
       .filter(Boolean)
   )
+}
+
+export function countProductGalleryImages(product: {
+  images?: Array<{ url?: string | null }>
+}): number {
+  const urls = new Set<string>()
+  for (const img of product.images || []) {
+    const u = img.url?.trim()
+    if (u) urls.add(u)
+  }
+  return urls.size
 }
 
 export function looksLikeMug(product: {
@@ -90,7 +108,7 @@ export async function maintainMugDesignProducts(
   const query = container.resolve(ContainerRegistrationKeys.QUERY)
   const { data: products } = await query.graph({
     entity: "product",
-    fields: ["id", "title", "handle", "description", "metadata"],
+    fields: ["id", "title", "handle", "description", "metadata", "images.url"],
   })
 
   const all = (products || []) as Array<{
@@ -99,6 +117,7 @@ export async function maintainMugDesignProducts(
     handle: string
     description?: string
     metadata?: Record<string, unknown>
+    images?: Array<{ url?: string | null }>
   }>
 
   log(`Scanned ${all.length} product(s)${input.dryRun ? " (dry run)" : ""}`)
@@ -136,6 +155,17 @@ export async function maintainMugDesignProducts(
     mugCandidates = mugCandidates.filter((p) => input.productIds!.includes(p.id))
   } else {
     mugCandidates = mugCandidates.filter((p) => p.metadata?.printful_product_id != null)
+  }
+
+  if (input.onlyIfGalleryImagesBelow != null) {
+    const threshold = input.onlyIfGalleryImagesBelow
+    const before = mugCandidates.length
+    mugCandidates = mugCandidates.filter(
+      (p) => countProductGalleryImages(p) < threshold
+    )
+    log(
+      `Sparse gallery filter (<${threshold} images): ${mugCandidates.length}/${before} mug(s)`
+    )
   }
 
   log(`${mugCandidates.length} mug candidate(s) for mockup regen`)
@@ -192,6 +222,7 @@ export async function maintainMugDesignProducts(
         base.gallery = result.gallery || []
         base.mockupTasks = result.mockupTasks || []
         base.mockupSkipReason = result.mockupSkipReason
+        base.mockupScenes = result.mockupScenes
         base.syncVariants = result.syncVariantFiles
         base.regenerated = base.mockupTasks.length > 0
 

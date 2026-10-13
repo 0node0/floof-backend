@@ -190,7 +190,7 @@ Mug mockups use **Lifestyle** and **Lifestyle 2** (and other non-blocked scenes;
 
 **Async maintenance (default):** `POST` with `maintenance: "regenerateMugMockups"` returns **202** with `jobId` and `statusUrl`. Poll **`GET /floof/maintenance-jobs/:jobId`** (same admin key) for `status` (`queued` → `running` → `completed`) and full per-mug `result.products`. Pass `"sync": true` to block until finished (may hit proxy timeouts).
 
-Completed jobs include a `products` array per mug with `mockupTasks`, `gallery`, and `imagesChanged`. `imagesChanged` is true only when a **new lifestyle mockup URL** was added. Mugs run **sequentially** with backoff. One mockup image per lifestyle **scene** (no duplicate Lifestyle shots).
+Completed jobs include a `products` array per mug with `mockupTasks`, **`mockupScenes`** (per-scene success, URL, error, attempts), `gallery`, and `imagesChanged`. Gallery order puts **handheld close-up (Lifestyle 2)** first. Pass **`onlySparseGalleries: true`** (or `onlyIfGalleryImagesBelow: 2`) to regen only mugs with fewer than 2 Medusa images. Failed scenes are retried with throttling until 2–3 scenes succeed when possible.
 
 **Admin API:**
 

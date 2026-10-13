@@ -36,7 +36,7 @@ describe("printful-mockup-config", () => {
     ]
     const batches = selectMockupOptionBatches(available, undefined, "drinkware")
     expect(batches).toHaveLength(2)
-    expect(batches.map((b) => b.optionGroups[0])).toEqual(["Lifestyle", "Lifestyle 2"])
+    expect(batches.map((b) => b.optionGroups[0])).toEqual(["Lifestyle 2", "Lifestyle"])
     expect(batches.every((b) => b.gender === "neutral")).toBe(true)
   })
 
@@ -97,13 +97,13 @@ describe("printful-mockup-config", () => {
     expect(pos.width).toBeLessThan(pos.area_width)
   })
 
-  it("orders drinkware gallery with lifestyle shots first", () => {
+  it("orders drinkware gallery with handheld close-up first", () => {
     const gallery = buildDrinkwareLifestyleGallery([
       { url: "https://a/flat.jpg", title: "Flat · Front" },
       { url: "https://a/life2.jpg", title: "Lifestyle 2 · Front" },
       { url: "https://a/life1.jpg", title: "Lifestyle · Front" },
     ])
-    expect(gallery[0]).toBe("https://a/life1.jpg")
-    expect(gallery[1]).toBe("https://a/life2.jpg")
+    expect(gallery[0]).toBe("https://a/life2.jpg")
+    expect(gallery[1]).toBe("https://a/life1.jpg")
   })
 })
