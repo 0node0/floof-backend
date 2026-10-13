@@ -419,12 +419,14 @@ export function buildMugProductGallery(
   const lifestyle = buildDrinkwareLifestyleGallery(
     lifestyleShots.filter((s) => s.url && !exclude.has(s.url))
   )
-  const flat = flatArtUrls.filter((u) => u && !exclude.has(u) && !lifestyle.includes(u))
+  if (lifestyle.length > 0) {
+    return lifestyle.slice(0, 10)
+  }
+  const flat = flatArtUrls.filter((u) => u && !exclude.has(u))
   const urls: string[] = []
   const push = (u?: string) => {
     if (u && !urls.includes(u)) urls.push(u)
   }
-  for (const u of lifestyle) push(u)
   for (const u of flat) push(u)
   return urls.slice(0, 10)
 }
@@ -444,13 +446,23 @@ export function buildDrinkwareLifestyleGallery(
 
   const sorted = [...shots].sort((a, b) => score(a.title) - score(b.title))
   const urls: string[] = []
-  const push = (u?: string) => {
-    if (u && !urls.includes(u) && !u.includes("/floof/design-files/")) urls.push(u)
+  const seenScene = new Set<string>()
+  const push = (u?: string, sceneKey?: string) => {
+    if (!u || u.includes("/floof/design-files/")) return
+    if (urls.includes(u)) return
+    if (sceneKey && seenScene.has(sceneKey)) return
+    if (sceneKey) seenScene.add(sceneKey)
+    urls.push(u)
   }
 
   for (const s of sorted) {
     if (urls.length >= 7) break
-    push(s.url)
+    const scene = (() => {
+      const m = /lifestyle\s*(\d+)?/i.exec(s.title || "")
+      if (m) return `lifestyle-${m[1] || "1"}`
+      return s.title || s.url
+    })()
+    push(s.url, scene)
   }
   for (const u of extras) {
     if (urls.length >= 7) break

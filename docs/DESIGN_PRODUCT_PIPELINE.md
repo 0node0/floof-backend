@@ -186,9 +186,11 @@ yarn regenerate:mug-mockups
 | `PRODUCT_IDS` | all mugs | Comma-separated Medusa product ids (mockup regen only) |
 | `MUG_CATALOG_PRODUCT_IDS` | `19,483` | Extra catalog ids for mug detection |
 
-Mug mockups use Printful **Lifestyle / Lifestyle 2 / Lifestyle 3** `option_groups` (one task each), placement **`default`**, and layout **templates** to center art on the front of the wrap. The first gallery image is the primary lifestyle shot.
+Mug mockups use Printful **Lifestyle / Lifestyle 2 / Lifestyle 3** `option_groups` (one task each), placement **`default`**, and a **dual-panel wrap composite** (art on front and mirrored on back of the 2700×1050 wrap) so lifestyle cameras see the design from any angle. The Medusa gallery is **lifestyle-only** when mockups exist.
 
-Maintenance responses include a `products` array per mug with `mockupTasks` (request, poll status, URLs), `gallery`, and `imagesChanged`. `imagesChanged` is true only when a **new lifestyle mockup URL** was added to the Medusa gallery. `mockupsRegenerated` uses that same flag. Mugs are processed **sequentially** with backoff between products and between Printful tasks. Logs include each Printful `create-task` payload and poll status.
+**Async maintenance (default):** `POST` with `maintenance: "regenerateMugMockups"` returns **202** with `jobId` and `statusUrl`. Poll **`GET /floof/maintenance-jobs/:jobId`** (same admin key) for `status` (`queued` → `running` → `completed`) and full per-mug `result.products`. Pass `"sync": true` to block until finished (may hit proxy timeouts).
+
+Completed jobs include a `products` array per mug with `mockupTasks`, `gallery`, and `imagesChanged`. `imagesChanged` is true only when a **new lifestyle mockup URL** was added. Mugs run **sequentially** with backoff. One mockup image per lifestyle **scene** (no duplicate Lifestyle shots).
 
 **Admin API:**
 
@@ -203,6 +205,13 @@ Content-Type: application/json
   "stripFloofPrefix": true,
   "dryRun": false
 }
+```
+
+Poll:
+
+```http
+GET /floof/maintenance-jobs/{jobId}
+x-floof-admin-key: YOUR_KEY
 ```
 
 ## Notes

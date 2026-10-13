@@ -8,6 +8,7 @@ import {
 import { publicDesignUrl, stageDesignFile } from "../../../lib/design-staging"
 import { setFloofCors } from "../../../lib/cors"
 import { maintainMugDesignProducts } from "../../../lib/maintain-mug-products"
+import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
 
 function requireAdmin(req: MedusaRequest, res: MedusaResponse): boolean {
   const expected = process.env.FLOOF_ADMIN_KEY || ""
@@ -51,21 +52,48 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
   const body = (req.body || {}) as Record<string, any>
 
   if (body.maintenance === "regenerateMugMockups") {
+    const input = {
+      regenerateMockups:
+        body.regenerateMockups !== false && body.regenerateMockups !== "false",
+      stripFloofPrefix:
+        body.stripFloofPrefix !== false && body.stripFloofPrefix !== "false",
+      dryRun: body.dryRun === true || body.dryRun === "true",
+      productIds: Array.isArray(body.productIds)
+        ? body.productIds.map(String)
+        : undefined,
+    }
+    const runSync = body.sync === true || body.sync === "true" || body.async === false
+
+    if (runSync) {
+      try {
+        const result = await maintainMugDesignProducts(req.scope, input)
+        res.status(200).json({ ok: true, maintenance: true, sync: true, ...result })
+      } catch (e: any) {
+        console.error("[floof/design-products maintenance]", e)
+        res.status(500).json({ error: e.message || "Maintenance failed" })
+      }
+      return
+    }
+
     try {
-      const result = await maintainMugDesignProducts(req.scope, {
-        regenerateMockups:
-          body.regenerateMockups !== false && body.regenerateMockups !== "false",
-        stripFloofPrefix:
-          body.stripFloofPrefix !== false && body.stripFloofPrefix !== "false",
-        dryRun: body.dryRun === true || body.dryRun === "true",
-        productIds: Array.isArray(body.productIds)
-          ? body.productIds.map(String)
-          : undefined,
+      const job = startMugMaintenanceJob(req.scope, input)
+      const base =
+        process.env.MEDUSA_BACKEND_URL ||
+        process.env.BACKEND_URL ||
+        "http://localhost:9000"
+      const statusUrl = `${base.replace(/\/$/, "")}/floof/maintenance-jobs/${job.id}`
+      res.status(202).json({
+        ok: true,
+        maintenance: true,
+        async: true,
+        jobId: job.id,
+        status: job.status,
+        statusUrl,
+        poll: `GET ${statusUrl} with x-floof-admin-key`,
       })
-      res.status(200).json({ ok: true, maintenance: true, ...result })
     } catch (e: any) {
-      console.error("[floof/design-products maintenance]", e)
-      res.status(500).json({ error: e.message || "Maintenance failed" })
+      console.error("[floof/design-products maintenance async]", e)
+      res.status(500).json({ error: e.message || "Failed to start maintenance job" })
     }
     return
   }
@@ -222,6 +250,8 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       stripFloofPrefix: true,
       dryRun: false,
       productIds: ["optional-medusa-product-id"],
+      sync: false,
+      note: "Default async — returns jobId; poll GET /floof/maintenance-jobs/:jobId",
     },
   })
 }
