@@ -132,7 +132,7 @@ export function resolveSyncFileType(placement: string): string {
   return placement
 }
 
-function printfileIdForPlacement(
+export function printfileIdForPlacement(
   variantPrintfiles: PrintfilesApiResult["variant_printfiles"],
   variantIds: number[],
   placement: string
@@ -145,7 +145,7 @@ function printfileIdForPlacement(
   return variantPrintfiles?.[0]?.placements?.[placement]
 }
 
-function findPrintfileDimensions(
+export function findPrintfileDimensions(
   printfiles: PrintfileInfo[],
   printfileId: number | undefined,
   placement: string

@@ -489,6 +489,12 @@ export async function generateLifestyleMockups(opts: {
   designUrl: string
   optionGroups?: string[]
   drinkwareWrapFile?: DrinkwareWrapFile
+  /** Apparel maintenance: use composited print file + full-bleed mockup position */
+  apparelMockup?: {
+    placement: string
+    position: Record<string, number>
+    designUrl: string
+  }
   log: (m: string) => void
 }): Promise<{
   shots: MockupShot[]
@@ -586,6 +592,14 @@ export async function generateLifestyleMockups(opts: {
 
   let mockupDesignUrl = designUrl
   let mockupPosition = position
+  if (opts.apparelMockup && productKind !== "drinkware") {
+    placement = opts.apparelMockup.placement
+    mockupDesignUrl = opts.apparelMockup.designUrl
+    mockupPosition = opts.apparelMockup.position
+    log(
+      `Apparel mockup override placement=${placement} url=${mockupDesignUrl.slice(0, 72)}…`
+    )
+  }
   let drinkwareWrapReady = productKind !== "drinkware"
   if (productKind === "drinkware") {
     if (opts.drinkwareWrapFile) {

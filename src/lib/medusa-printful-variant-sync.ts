@@ -294,3 +294,51 @@ export async function syncMedusaProductVariantsIdempotent(
 
   return { updated: plan.toUpdate.length, created: plan.toCreate.length }
 }
+
+/** Update matched variants only — never create missing variants (maintenance). */
+export async function syncMedusaProductVariantsUpdateOnly(
+  container: MedusaContainer,
+  productId: string,
+  syncVariants: Array<{
+    id: number
+    name?: string
+    retail_price?: string
+    variant_id?: number
+    external_id?: string
+    product?: { name?: string }
+  }>,
+  defaultRetailPrice: string,
+  log?: (m: string) => void
+): Promise<{ updated: number; skipped: number }> {
+  const { variants: desired } = buildMedusaVariantsFromPrintfulSync(
+    syncVariants,
+    defaultRetailPrice
+  )
+  const existing = await listMedusaVariantsForProduct(container, productId)
+  const plan = planIdempotentVariantSync(existing, desired)
+
+  if (plan.toCreate.length) {
+    log?.(
+      `Skipping ${plan.toCreate.length} missing Medusa variant(s) — maintenance does not create variants`
+    )
+  }
+
+  if (!plan.toUpdate.length) {
+    return { updated: 0, skipped: plan.toCreate.length }
+  }
+
+  await updateProductsWorkflow(container).run({
+    input: {
+      products: [
+        {
+          id: productId,
+          variants: plan.toUpdate.map(({ existingId, variant }) =>
+            buildMedusaVariantUpdatePayload(existingId, variant)
+          ),
+        },
+      ],
+    } as any,
+  })
+
+  return { updated: plan.toUpdate.length, skipped: plan.toCreate.length }
+}
