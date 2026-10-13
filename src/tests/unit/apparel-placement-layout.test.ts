@@ -3,7 +3,6 @@ import {
   buildCentredBackPosition,
   buildCentredFrontPosition,
   buildLeftChestPosition,
-  buildSmallFrontChestPosition,
   clampPrintPosition,
   planApparelPlacementLayout,
   resolvePrintAreaDpi,
@@ -57,11 +56,23 @@ describe("apparel-placement-layout @ 1800×2400 (150 DPI)", () => {
     expect(pos.top).toBe(413)
   })
 
-  it("chestPlusBack front is small centred chest", () => {
-    const pos = buildSmallFrontChestPosition(AREA_W, AREA_H)
-    expect(pos.width).toBe(563)
-    expect(pos.left).toBe(619)
-    expect(pos.top).toBe(450)
+  it("chestPlusBack front uses wearer's left chest (same box as leftChest)", () => {
+    const left = buildLeftChestPosition(AREA_W, AREA_H)
+    const plan = planApparelPlacementLayout(
+      "chestPlusBack",
+      {
+        printfiles: [
+          { printfile_id: 1, width: AREA_W, height: AREA_H, placement: "front" },
+          { printfile_id: 2, width: AREA_W, height: AREA_H, placement: "back" },
+        ],
+        variant_printfiles: [{ variant_id: 1, placements: { front: 1, back: 2 } }],
+      },
+      [1],
+      false
+    )
+    expect(plan.placements[0].position.left).toBe(left.left)
+    expect(plan.placements[0].position.top).toBe(450)
+    expect(plan.placements[0].position.width).toBe(563)
   })
 
   it("clamps oversized boxes inside print area", () => {

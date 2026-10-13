@@ -218,7 +218,7 @@ export function planApparelPlacementLayout(
     placements.push({
       placement: "front",
       syncFileType: syncTypeForPlacement("front"),
-      position: buildSmallFrontChestPosition(frontDims.width, frontDims.height),
+      position: buildLeftChestPosition(frontDims.width, frontDims.height),
     })
     placements.push({
       placement: "back",
