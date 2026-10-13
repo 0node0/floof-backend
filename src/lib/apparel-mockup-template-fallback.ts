@@ -34,6 +34,39 @@ export function computeTemplateArtRect(
   return { left, top, width, height }
 }
 
+export function clampExtractRegion(
+  imageWidth: number,
+  imageHeight: number,
+  region: { left: number; top: number; width: number; height: number }
+): { left: number; top: number; width: number; height: number } {
+  const iw = Math.max(1, Math.floor(imageWidth))
+  const ih = Math.max(1, Math.floor(imageHeight))
+  const left = Math.max(0, Math.min(Math.floor(region.left), iw - 1))
+  const top = Math.max(0, Math.min(Math.floor(region.top), ih - 1))
+  const maxW = iw - left
+  const maxH = ih - top
+  const width = Math.max(1, Math.min(Math.floor(region.width), maxW))
+  const height = Math.max(1, Math.min(Math.floor(region.height), maxH))
+  return { left, top, width, height }
+}
+
+/** Scale print-area box to actual PNG pixels when file size ≠ declared area_width/height. */
+export function resolvePrintAreaExtractBox(
+  imageWidth: number,
+  imageHeight: number,
+  printPosition: ApparelPrintPosition
+): { left: number; top: number; width: number; height: number } {
+  const box = clampPrintPosition(printPosition)
+  const scaleX = imageWidth / box.area_width
+  const scaleY = imageHeight / box.area_height
+  return clampExtractRegion(imageWidth, imageHeight, {
+    left: Math.round(box.left * scaleX),
+    top: Math.round(box.top * scaleY),
+    width: Math.round(box.width * scaleX),
+    height: Math.round(box.height * scaleY),
+  })
+}
+
 export async function compositeArtOntoLayoutTemplate(
   template: LayoutTemplate,
   printAreaPng: Buffer,
@@ -44,18 +77,18 @@ export async function compositeArtOntoLayoutTemplate(
   const box = clampPrintPosition(printPosition)
   const rect = computeTemplateArtRect(template, box)
 
-  const templateBuf = await fetchImageBuffer(String(template.image_url))
+  const meta = await sharp(printAreaPng).metadata()
+  const imgW = meta.width || box.area_width
+  const imgH = meta.height || box.area_height
+  const extract = resolvePrintAreaExtractBox(imgW, imgH, box)
+
   const art = await sharp(printAreaPng)
-    .extract({
-      left: box.left,
-      top: box.top,
-      width: box.width,
-      height: box.height,
-    })
+    .extract(extract)
     .resize(rect.width, rect.height, { fit: "fill" })
     .png()
     .toBuffer()
 
+  const templateBuf = await fetchImageBuffer(String(template.image_url))
   return sharp(templateBuf)
     .resize(templateW, templateH, { fit: "fill" })
     .composite([{ input: art, left: rect.left, top: rect.top }])

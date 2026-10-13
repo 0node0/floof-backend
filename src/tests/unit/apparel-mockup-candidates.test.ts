@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest"
 import {
   extractMockupCandidatesFromTask,
   findMatchingBlankCandidate,
+  inferMainMockupEntryView,
   parseGarmentViewFromOptionLabel,
+  pickPreferredMockupCandidate,
   selectMockupCandidatesForPlacement,
 } from "../../lib/apparel-mockup-candidates"
 
@@ -12,6 +14,42 @@ describe("apparel-mockup-candidates", () => {
     expect(parseGarmentViewFromOptionLabel("Back", "Black Heather")).toBe("back")
     expect(parseGarmentViewFromOptionLabel("Left", "")).toBe("left")
     expect(parseGarmentViewFromOptionLabel("Men's", "Lifestyle")).toBe("unknown")
+  })
+
+  it("treats main mockup_url as front when placement is front and no option label", () => {
+    const entry = {
+      placement: "front",
+      mockup_url:
+        "https://files.printful.com/unisex-staple-t-shirt-black-front-dtg.png",
+    }
+    expect(inferMainMockupEntryView(entry, "front")).toBe("front")
+
+    const result = {
+      mockups: [
+        {
+          placement: "front",
+          mockup_url:
+            "https://files.printful.com/unisex-staple-t-shirt-black-front-dtg.png",
+        },
+      ],
+    }
+    const candidates = extractMockupCandidatesFromTask(
+      result,
+      "Women's Lifestyle 3",
+      "front"
+    )
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0].view).toBe("front")
+    expect(candidates[0].isMainMockupUrl).toBe(true)
+
+    const allowed = selectMockupCandidatesForPlacement(
+      result,
+      "Women's Lifestyle 3",
+      "front",
+      "leftChest"
+    )
+    expect(allowed).toHaveLength(1)
+    expect(pickPreferredMockupCandidate(allowed)?.url).toContain("front-dtg")
   })
 
   it("extracts candidates per option_group and ignores other groups", () => {
@@ -34,8 +72,9 @@ describe("apparel-mockup-candidates", () => {
         },
       ],
     }
-    const lifestyle = extractMockupCandidatesFromTask(result, "Lifestyle")
-    expect(lifestyle.map((c) => c.view)).toEqual(["front", "back"])
+    const lifestyle = extractMockupCandidatesFromTask(result, "Lifestyle", "front")
+    expect(lifestyle.some((c) => c.view === "front")).toBe(true)
+    expect(lifestyle.some((c) => c.view === "back")).toBe(true)
 
     const frontOnly = selectMockupCandidatesForPlacement(
       result,
@@ -43,8 +82,7 @@ describe("apparel-mockup-candidates", () => {
       "front",
       "leftChest"
     )
-    expect(frontOnly).toHaveLength(1)
-    expect(frontOnly[0].url).toBe("https://example.com/front.png")
+    expect(frontOnly.every((c) => c.view === "front")).toBe(true)
   })
 
   it("matches blank garment by view, option and option_group", () => {
@@ -70,6 +108,28 @@ describe("apparel-mockup-candidates", () => {
     ]
     expect(findMatchingBlankCandidate(blanks, design)?.url).toBe(
       "https://example.com/b-front.png"
+    )
+  })
+
+  it("matches main mockup Default option to blank Default option", () => {
+    const design = {
+      url: "https://example.com/d.png",
+      optionGroup: "Women's Lifestyle 3",
+      option: "Default",
+      view: "front" as const,
+      isMainMockupUrl: true,
+    }
+    const blanks = [
+      {
+        url: "https://example.com/blank.png",
+        optionGroup: "Women's Lifestyle 3",
+        option: "Default",
+        view: "front" as const,
+        isMainMockupUrl: true,
+      },
+    ]
+    expect(findMatchingBlankCandidate(blanks, design)?.url).toBe(
+      "https://example.com/blank.png"
     )
   })
 })

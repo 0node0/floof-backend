@@ -29,6 +29,7 @@ describe("printful-mockup-generator", () => {
     }
     expect(extractMockupUrlsForOptionGroup(result, "Lifestyle")).toEqual([
       "https://example.com/lifestyle-front.png",
+      "https://example.com/zoom.png",
     ])
   })
 

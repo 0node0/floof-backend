@@ -7,7 +7,10 @@ import {
   selectMockupCandidatesForPlacement,
   type MockupImageCandidate,
 } from "./apparel-mockup-candidates"
-import { filterMockupOptionGroupsForPlacement } from "./apparel-mockup-options"
+import {
+  capMockupOptionGroupsForProduct,
+  filterMockupOptionGroupsForPlacement,
+} from "./apparel-mockup-options"
 import {
   fetchImageBuffer,
   mockupPixelDifference,
@@ -285,8 +288,8 @@ export async function generateApparelPlacementMockups(opts: {
 }> {
   const { client, catalogProductId, variantIds, layout, log } = opts
   const vids = variantIds.slice(0, 2)
-  const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3)
-  const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
+  const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 6)
+  const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 3000)
   let shots: ApparelMockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
   let hasPassingFront = false
@@ -312,10 +315,16 @@ export async function generateApparelPlacementMockups(opts: {
     )
 
     for (const batch of mockupConfig.batches) {
-      const groups = filterMockupOptionGroupsForPlacement(
+      const groups = capMockupOptionGroupsForProduct(
         placement,
-        batch.optionGroups.filter(Boolean)
+        filterMockupOptionGroupsForPlacement(
+          placement,
+          batch.optionGroups.filter(Boolean)
+        )
       )
+      if (groups.length) {
+        log(`Mockup option groups placement=${placement}: ${groups.join(", ")}`)
+      }
       for (const group of groups) {
         try {
           const blankTask = await runBlankGarmentMockupTask({
@@ -332,7 +341,7 @@ export async function generateApparelPlacementMockups(opts: {
           if (!blankPoll) {
             throw new ApparelMockupValidationError("Blank mockup task missing poll response")
           }
-          const blankCandidates = extractMockupCandidatesFromTask(blankPoll, group)
+          const blankCandidates = extractMockupCandidatesFromTask(blankPoll, group, placement)
 
           const { taskLog } = await withPrintfulRetries(
             `Mockup ${placement} (${group})`,
@@ -386,7 +395,7 @@ export async function generateApparelPlacementMockups(opts: {
           if (!designCandidate) {
             log(
               `No ${placement} view candidate for group=${group} (layout=${layout}); ` +
-                `candidates=${extractMockupCandidatesFromTask(poll, group).length}`
+                `candidates=${extractMockupCandidatesFromTask(poll, group, placement).length}`
             )
             taskLog.validation = { unknown: true, passed: false }
             if (placement === "back" || printFile.printAreaUrl) {
