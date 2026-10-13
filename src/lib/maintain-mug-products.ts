@@ -4,6 +4,7 @@ import { updateProductsWorkflow } from "@medusajs/medusa/core-flows"
 import { importPrintfulProductToMedusa } from "./product-from-design"
 import { stripFloofProductTitle } from "./printful-mockup-config"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
+import type { SyncVariantFileReport } from "./printful-mug-sync"
 import { sleep } from "./async-sleep"
 
 export type MaintainMugProductsInput = {
@@ -25,6 +26,8 @@ export type MugProductMaintenanceResult = {
   imagesChanged: boolean
   gallery: string[]
   mockupTasks: MockupTaskRunLog[]
+  mockupSkipReason?: string
+  syncVariants?: SyncVariantFileReport[]
   error?: string
 }
 
@@ -188,17 +191,19 @@ export async function maintainMugDesignProducts(
         base.imagesChanged = changed
         base.gallery = result.gallery || []
         base.mockupTasks = result.mockupTasks || []
+        base.mockupSkipReason = result.mockupSkipReason
+        base.syncVariants = result.syncVariantFiles
         base.regenerated = base.mockupTasks.length > 0
 
         if (changed) {
           mockupsRegenerated++
-          log(`✓ ${product.handle}: new lifestyle mockup(s) in gallery (${base.gallery.length} images)`)
+          log(`✓ ${product.handle}: gallery saved (${base.gallery.length} images)`)
         } else if (base.mockupTasks.length) {
-          log(
-            `○ ${product.handle}: ${base.mockupTasks.length} mockup task(s) — no new lifestyle URLs in Medusa`
-          )
+          log(`○ ${product.handle}: ${base.mockupTasks.length} mockup task(s) — gallery unchanged`)
         } else {
-          log(`○ ${product.handle}: no mockup tasks ran`)
+          log(
+            `○ ${product.handle}: no mockup tasks — ${base.mockupSkipReason || "unknown reason"}`
+          )
         }
         productResults.push(base)
       } catch (e: unknown) {

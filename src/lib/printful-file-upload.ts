@@ -2,13 +2,18 @@ import type PrintfulApiClient from "../modules/printful/client"
 import { publicDesignUrl, stageDesignFile } from "./design-staging"
 import { sleep } from "./async-sleep"
 
-/** Stage PNG publicly, register with Printful file library, return CDN URL. */
+export type PrintfulUploadedFile = {
+  fileId: number
+  cdnUrl: string
+}
+
+/** Stage PNG publicly, register with Printful file library, return file id + CDN URL. */
 export async function uploadPngToPrintfulFileLibrary(
   client: PrintfulApiClient,
   png: Buffer,
   filename: string,
   log?: (m: string) => void
-): Promise<string> {
+): Promise<PrintfulUploadedFile> {
   const id = await stageDesignFile({
     buffer: png,
     contentType: "image/png",
@@ -36,7 +41,7 @@ export async function uploadPngToPrintfulFileLibrary(
     const st = String(f.status || "").toLowerCase()
     if (st === "ok" || st === "ready") {
       const cdn = f.preview_url || f.url || f.thumbnail_url
-      if (cdn) return cdn
+      if (cdn) return { fileId, cdnUrl: cdn }
     }
     if (st === "failed" || st === "error") {
       throw new Error(`Printful file ${fileId} processing failed`)
