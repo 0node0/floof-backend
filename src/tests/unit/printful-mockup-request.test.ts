@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest"
 import {
   buildApparelMockupFilePayload,
   isFullBleedMockupPosition,
+  isPreviewArtworkUrl,
+  mockupCreateOptionsForPlacement,
 } from "../../lib/printful-mockup-request"
 import { buildApparelFullBleedPosition } from "../../lib/apparel-placement-layout"
 
@@ -27,6 +29,22 @@ describe("printful-mockup-request", () => {
     expect(payload.position.left).toBe(619)
     expect(payload.position.limit_to_print_area).toBe(true)
     expect(isFullBleedMockupPosition(payload.position)).toBe(false)
+  })
+
+  it("rejects preview artwork URLs for mockup payloads", () => {
+    expect(isPreviewArtworkUrl("https://cdn.example.com/foo_preview.png")).toBe(true)
+    expect(() =>
+      buildApparelMockupFilePayload({
+        placement: "front",
+        designSourceUrl: "https://cdn.example.com/foo_preview.png",
+        printPosition: leftChest,
+      })
+    ).toThrow(/preview/)
+  })
+
+  it("requests Back option for back placement mockups", () => {
+    expect(mockupCreateOptionsForPlacement("back")).toEqual(["Back"])
+    expect(mockupCreateOptionsForPlacement("front")).toBeUndefined()
   })
 
   it("documents root cause: composited print-area PNG + full-bleed position yields blank mockups", () => {

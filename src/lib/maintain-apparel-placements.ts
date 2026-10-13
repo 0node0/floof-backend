@@ -14,8 +14,10 @@ import { generateApparelPlacementMockups } from "./product-from-design"
 import {
   DESIGN_SOURCE_FILE_ID_META,
   DESIGN_SOURCE_URL_META,
+  readDesignSourceFromMetadata,
   resolveMugDesignSource,
 } from "./mug-design-source"
+import { resolveArtworkUrlForMockup } from "./printful-mockup-request"
 import { replaceProductGalleryImages } from "./medusa-product-images"
 import { syncMedusaProductVariantsUpdateOnly } from "./medusa-printful-variant-sync"
 import PrintfulApiClient from "../modules/printful/client"
@@ -431,11 +433,19 @@ export async function maintainApparelPlacements(
         }
       }
 
+      const metaSource = readDesignSourceFromMetadata(product.metadata)
+      const mockupArtworkUrl = await resolveArtworkUrlForMockup(
+        client,
+        designSource.url,
+        designSource.fileId ?? metaSource.fileId,
+        log
+      )
+
       const mockupInputs = layoutPlan.planned.map((p) => {
         const area = printAreaByPlacement.get(p.placement)
         return {
           placement: p.placement,
-          designSourceUrl: designSource.url,
+          designSourceUrl: mockupArtworkUrl,
           printPosition: p.position,
           printAreaUrl: area?.url,
         }
@@ -445,6 +455,7 @@ export async function maintainApparelPlacements(
         client,
         catalogProductId,
         variantIds,
+        layout,
         printFiles: mockupInputs,
         log,
       })

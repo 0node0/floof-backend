@@ -4,6 +4,7 @@
  */
 
 import type PrintfulApiClient from "../modules/printful/client"
+import { extractMockupCandidatesFromTask } from "./apparel-mockup-candidates"
 import { throttlePrintfulMockupCreateTask } from "./printful-mockup-rate-limit"
 
 export type MockupPrintPosition = Record<string, number | boolean>
@@ -55,9 +56,13 @@ export type MockupTaskRunLog = {
   mockupUrls: string[]
   pollAttempts: number
   validation?: {
-    pixelDiffRatio: number
-    passed: boolean
+    pixelDiffRatio?: number
+    passed?: boolean
+    unknown?: boolean
     comparedToBlankUrl?: string
+    designOption?: string
+    designView?: string
+    blankOption?: string
   }
   usedTemplateFallback?: boolean
 }
@@ -88,39 +93,13 @@ function normalizeUrl(u?: string): string | null {
 
 /**
  * Extract mockup URLs for a requested option_group from a completed task.
- * Lifestyle shots usually appear under mockups[].extra with option_group set.
+ * Prefer structured selection via `extractMockupCandidatesFromTask` for apparel.
  */
 export function extractMockupUrlsForOptionGroup(
   result: PrintfulMockupTaskResult,
   optionGroup: string
 ): string[] {
-  const want = optionGroup.toLowerCase()
-  const urls: string[] = []
-  const push = (u?: string) => {
-    const n = normalizeUrl(u)
-    if (n && !urls.includes(n)) urls.push(n)
-  }
-
-  for (const m of result.mockups || []) {
-    let matchedExtra = false
-    for (const ex of m.extra || []) {
-      const group = String(ex.option_group || "").toLowerCase()
-      if (group) {
-        if (group !== want) continue
-      } else if (want && /lifestyle/i.test(want) && /flat/i.test(String(ex.title || ex.option || ""))) {
-        continue
-      }
-      matchedExtra = true
-      push(ex.url || ex.mockup_url)
-    }
-    if (matchedExtra) continue
-
-    const topGroup = String((m as { option_group?: string }).option_group || "").toLowerCase()
-    if (!want || !topGroup || topGroup === want) {
-      push(m.mockup_url || m.url)
-    }
-  }
-  return urls
+  return extractMockupCandidatesFromTask(result, optionGroup).map((c) => c.url)
 }
 
 export function isPrintfulTaskPending(status: string): boolean {

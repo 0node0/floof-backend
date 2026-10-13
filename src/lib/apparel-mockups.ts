@@ -1,12 +1,23 @@
 import sharp from "sharp"
 import type PrintfulApiClient from "../modules/printful/client"
+import {
+  extractMockupCandidatesFromTask,
+  findMatchingBlankCandidate,
+  pickPreferredMockupCandidate,
+  selectMockupCandidatesForPlacement,
+  type MockupImageCandidate,
+} from "./apparel-mockup-candidates"
 import { filterMockupOptionGroupsForPlacement } from "./apparel-mockup-options"
 import {
   fetchImageBuffer,
   mockupPixelDifference,
   mockupShowsDesign,
 } from "./apparel-mockup-validation"
-import { buildApparelFullBleedPosition, type ApparelPrintPosition } from "./apparel-placement-layout"
+import {
+  buildApparelFullBleedPosition,
+  type ApparelPlacementLayout,
+  type ApparelPrintPosition,
+} from "./apparel-placement-layout"
 import { generateTemplateFallbackMockup } from "./apparel-mockup-template-fallback"
 import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
 import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
@@ -14,7 +25,10 @@ import { sleep as delay } from "./async-sleep"
 import { dedupeMockupShotsByScene } from "./mockup-scene-dedupe"
 import { loadPrintfulMockupConfig } from "./printful-mockup-config"
 import { runPrintfulMockupTask, type MockupTaskRunLog } from "./printful-mockup-generator"
-import { buildApparelMockupFilePayload } from "./printful-mockup-request"
+import {
+  buildApparelMockupFilePayload,
+  mockupCreateOptionsForPlacement,
+} from "./printful-mockup-request"
 import { withPrintfulRetries } from "./printful-retry"
 
 export type ApparelMockupShot = {
@@ -24,15 +38,14 @@ export type ApparelMockupShot = {
   title?: string
   placement: string
   templateFallback?: boolean
+  view?: string
+  option?: string
 }
 
 export type ApparelMockupPrintInput = {
   placement: string
-  /** Original artwork URL (not the composited print-area PNG). */
   designSourceUrl: string
-  /** Placement box inside the printfile (area_width × area_height). */
   printPosition: ApparelPrintPosition
-  /** Full print-area PNG already on Printful — used for template compositing fallback. */
   printAreaUrl?: string
 }
 
@@ -43,8 +56,7 @@ export class ApparelMockupValidationError extends Error {
   }
 }
 
-const blankFileUrlCache = new Map<string, string>()
-const blankMockupUrlCache = new Map<string, string>()
+const blankTaskCache = new Map<string, MockupTaskRunLog>()
 
 async function transparentPrintAreaPng(areaW: number, areaH: number): Promise<Buffer> {
   return sharp({
@@ -66,8 +78,6 @@ async function ensureBlankPrintFileUrl(
   log: (m: string) => void
 ): Promise<string> {
   const key = `${areaW}x${areaH}`
-  const cached = blankFileUrlCache.get(key)
-  if (cached) return cached
   const png = await transparentPrintAreaPng(areaW, areaH)
   const uploaded = await withPrintfulRetries(
     "Upload blank print-area PNG",
@@ -81,12 +91,10 @@ async function ensureBlankPrintFileUrl(
       )
   )
   const full = await resolveFullPrintfulFileUrlById(client, uploaded.fileId, log)
-  const url = full?.url || uploaded.cdnUrl
-  blankFileUrlCache.set(key, url)
-  return url
+  return full?.url || uploaded.cdnUrl
 }
 
-async function ensureBlankGarmentMockupUrl(opts: {
+async function runBlankGarmentMockupTask(opts: {
   client: PrintfulApiClient
   catalogProductId: number
   variantIds: number[]
@@ -95,9 +103,9 @@ async function ensureBlankGarmentMockupUrl(opts: {
   areaW: number
   areaH: number
   log: (m: string) => void
-}): Promise<string> {
+}): Promise<MockupTaskRunLog> {
   const cacheKey = `${opts.catalogProductId}:${opts.placement}:${opts.group}:${opts.areaW}x${opts.areaH}`
-  const cached = blankMockupUrlCache.get(cacheKey)
+  const cached = blankTaskCache.get(cacheKey)
   if (cached) return cached
 
   const blankFileUrl = await ensureBlankPrintFileUrl(
@@ -107,6 +115,7 @@ async function ensureBlankGarmentMockupUrl(opts: {
     opts.log
   )
   const position = buildApparelFullBleedPosition(opts.areaW, opts.areaH)
+  const options = mockupCreateOptionsForPlacement(opts.placement)
   const taskLog = await withPrintfulRetries(
     `Blank garment mockup ${opts.placement} (${opts.group})`,
     opts.log,
@@ -119,6 +128,7 @@ async function ensureBlankGarmentMockupUrl(opts: {
           format: "jpg",
           files: [{ placement: opts.placement, image_url: blankFileUrl, position }],
           option_groups: [opts.group],
+          ...(options ? { options } : {}),
         },
         {
           log: opts.log,
@@ -127,31 +137,30 @@ async function ensureBlankGarmentMockupUrl(opts: {
         }
       )
   )
-  const blankUrl = taskLog.mockupUrls[0]
-  if (!blankUrl) {
-    throw new ApparelMockupValidationError(
-      `Blank garment mockup returned no URL (${opts.placement} / ${opts.group})`
-    )
-  }
-  blankMockupUrlCache.set(cacheKey, blankUrl)
-  return blankUrl
+  blankTaskCache.set(cacheKey, taskLog)
+  return taskLog
 }
 
-async function validateMockupAgainstBlank(
+async function validateMockupAgainstMatchedBlank(
   designUrl: string,
   blankUrl: string,
+  design: MockupImageCandidate,
+  blank: MockupImageCandidate,
   log: (m: string) => void
 ): Promise<{ pixelDiffRatio: number; passed: boolean }> {
+  log(
+    `Mockup validation view=${design.view} option="${design.option}" ` +
+      `blankOption="${blank.option}" design=${designUrl.slice(0, 64)}…`
+  )
   const [designBuf, blankBuf] = await Promise.all([
     fetchImageBuffer(designUrl),
     fetchImageBuffer(blankUrl),
   ])
   const diff = await mockupPixelDifference(designBuf, blankBuf)
   log(
-    `Mockup validation: ${(diff.ratio * 100).toFixed(2)}% pixels differ from blank garment`
+    `Mockup validation: ${(diff.ratio * 100).toFixed(2)}% pixels differ from matched blank`
   )
-  const passed = mockupShowsDesign(diff)
-  return { pixelDiffRatio: diff.ratio, passed }
+  return { pixelDiffRatio: diff.ratio, passed: mockupShowsDesign(diff) }
 }
 
 async function runPlacementMockupTask(opts: {
@@ -163,6 +172,15 @@ async function runPlacementMockupTask(opts: {
   gender: "male" | "female" | "neutral"
   log: (m: string) => void
 }): Promise<{ shots: ApparelMockupShot[]; taskLog: MockupTaskRunLog }> {
+  const placement = opts.filePayload.placement
+  const options = mockupCreateOptionsForPlacement(placement)
+  if (placement === "back") {
+    opts.log(
+      `Back mockup task placement=back option_groups=${opts.group} options=${JSON.stringify(options)} ` +
+        `position=${JSON.stringify(opts.filePayload.position)}`
+    )
+  }
+
   const taskLog = await runPrintfulMockupTask(
     opts.client,
     opts.catalogProductId,
@@ -171,6 +189,7 @@ async function runPlacementMockupTask(opts: {
       format: "jpg",
       files: [opts.filePayload],
       option_groups: [opts.group],
+      ...(options ? { options } : {}),
     },
     {
       log: opts.log,
@@ -179,37 +198,82 @@ async function runPlacementMockupTask(opts: {
     }
   )
 
-  const shots: ApparelMockupShot[] = []
-  for (const url of taskLog.mockupUrls) {
-    shots.push({
-      url,
-      kind: /lifestyle/i.test(opts.group) ? "lifestyle" : "other",
-      gender: opts.gender,
-      title: `${opts.group} · ${opts.filePayload.placement}`,
-      placement: opts.filePayload.placement,
-    })
+  return { shots: [], taskLog }
+}
+
+function shotFromCandidate(
+  candidate: MockupImageCandidate,
+  opts: {
+    group: string
+    placement: string
+    gender: "male" | "female" | "neutral"
+    templateFallback?: boolean
   }
-  return { shots, taskLog }
+): ApparelMockupShot {
+  return {
+    url: candidate.url,
+    kind: /lifestyle/i.test(opts.group) ? "lifestyle" : "other",
+    gender: opts.gender,
+    title: `${opts.group} · ${opts.placement}${opts.templateFallback ? " (template)" : ""}`,
+    placement: opts.placement,
+    templateFallback: opts.templateFallback,
+    view: candidate.view,
+    option: candidate.option,
+  }
 }
 
 function buildLifestyleGalleryFromShots(shots: ApparelMockupShot[]): string[] {
-  const frontFirst = [...shots].sort((a, b) => {
-    if (a.placement === b.placement) return 0
-    if (a.placement === "front") return -1
-    if (b.placement === "front") return 1
-    return 0
-  })
+  const prefer = (s: ApparelMockupShot) => {
+    if (s.templateFallback) return 2
+    if (s.placement === "front") return 0
+    if (s.placement === "back") return 1
+    return 3
+  }
+  const sorted = [...shots].sort((a, b) => prefer(a) - prefer(b))
   const urls: string[] = []
-  for (const s of frontFirst) {
+  for (const s of sorted) {
     if (s.url && !urls.includes(s.url)) urls.push(s.url)
   }
   return urls.slice(0, 7)
+}
+
+async function tryTemplateFallback(opts: {
+  client: PrintfulApiClient
+  catalogProductId: number
+  variantId: number
+  placement: string
+  printAreaUrl: string
+  printPosition: ApparelPrintPosition
+  group: string
+  gender: "male" | "female" | "neutral"
+  log: (m: string) => void
+}): Promise<ApparelMockupShot> {
+  const printAreaBuf = await fetchImageBuffer(opts.printAreaUrl)
+  const fallbackUrl = await generateTemplateFallbackMockup({
+    client: opts.client,
+    catalogProductId: opts.catalogProductId,
+    variantId: opts.variantId,
+    placement: opts.placement,
+    printAreaPng: printAreaBuf,
+    printPosition: opts.printPosition,
+    log: opts.log,
+  })
+  return {
+    url: fallbackUrl,
+    kind: /lifestyle/i.test(opts.group) ? "lifestyle" : "other",
+    gender: opts.gender,
+    title: `${opts.group} · ${opts.placement} (template)`,
+    placement: opts.placement,
+    templateFallback: true,
+    view: opts.placement === "back" ? "back" : "front",
+  }
 }
 
 export async function generateApparelPlacementMockups(opts: {
   client: PrintfulApiClient
   catalogProductId: number
   variantIds: number[]
+  layout: ApparelPlacementLayout
   printFiles: ApparelMockupPrintInput[]
   log: (m: string) => void
 }): Promise<{
@@ -217,12 +281,14 @@ export async function generateApparelPlacementMockups(opts: {
   gallery: string[]
   mockupTasks: MockupTaskRunLog[]
 }> {
-  const { client, catalogProductId, variantIds, log } = opts
+  const { client, catalogProductId, variantIds, layout, log } = opts
   const vids = variantIds.slice(0, 2)
   const taskRetries = Number(process.env.PRINTFUL_MOCKUP_TASK_RETRIES || 3)
   const taskGapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 2500)
   let shots: ApparelMockupShot[] = []
   const mockupTasks: MockupTaskRunLog[] = []
+  let hasPassingFront = false
+  let hasPassingBack = false
 
   const mockupConfig = await loadPrintfulMockupConfig(client, catalogProductId, variantIds)
 
@@ -237,7 +303,7 @@ export async function generateApparelPlacementMockups(opts: {
     const areaH = Number(filePayload.position.area_height)
 
     log(
-      `Apparel mockups placement=${placement} artwork=${filePayload.image_url.slice(0, 72)}… ` +
+      `Apparel mockups placement=${placement} layout=${layout} artwork=${filePayload.image_url.slice(0, 72)}… ` +
         `position=${JSON.stringify(filePayload.position)}`
     )
 
@@ -248,7 +314,7 @@ export async function generateApparelPlacementMockups(opts: {
       )
       for (const group of groups) {
         try {
-          const blankUrl = await ensureBlankGarmentMockupUrl({
+          const blankTask = await runBlankGarmentMockupTask({
             client,
             catalogProductId,
             variantIds: vids,
@@ -258,8 +324,13 @@ export async function generateApparelPlacementMockups(opts: {
             areaH,
             log,
           })
+          const blankPoll = blankTask.pollResponse
+          if (!blankPoll) {
+            throw new ApparelMockupValidationError("Blank mockup task missing poll response")
+          }
+          const blankCandidates = extractMockupCandidatesFromTask(blankPoll, group)
 
-          const { shots: batchShots, taskLog } = await withPrintfulRetries(
+          const { taskLog } = await withPrintfulRetries(
             `Mockup ${placement} (${group})`,
             log,
             () =>
@@ -276,52 +347,106 @@ export async function generateApparelPlacementMockups(opts: {
             taskGapMs
           )
 
-          let finalShots = batchShots
-          if (batchShots.length) {
-            const validation = await validateMockupAgainstBlank(
-              batchShots[0].url,
-              blankUrl,
-              log
-            )
-            taskLog.validation = {
-              pixelDiffRatio: validation.pixelDiffRatio,
-              passed: validation.passed,
-              comparedToBlankUrl: blankUrl,
-            }
+          const poll = taskLog.pollResponse
+          if (!poll) {
+            throw new ApparelMockupValidationError("Mockup task missing poll response")
+          }
 
-            if (!validation.passed) {
-              log(
-                `Mockup blank for ${placement}/${group} — trying template fallback`
+          const allowed = selectMockupCandidatesForPlacement(poll, group, placement, layout)
+          const designCandidate = pickPreferredMockupCandidate(allowed)
+          let finalShot: ApparelMockupShot | undefined
+          let usedFallback = false
+
+          const applyFallback = async (reason: string) => {
+            log(`${reason} — template fallback for ${placement}/${group}`)
+            if (!printFile.printAreaUrl) {
+              throw new ApparelMockupValidationError(
+                `No printAreaUrl for template fallback (${placement}/${group})`
               )
-              if (!printFile.printAreaUrl) {
-                throw new ApparelMockupValidationError(
-                  `Mockup appears blank and no printAreaUrl for template fallback`
-                )
+            }
+            finalShot = await tryTemplateFallback({
+              client,
+              catalogProductId,
+              variantId: vids[0],
+              placement,
+              printAreaUrl: printFile.printAreaUrl,
+              printPosition: printFile.printPosition,
+              group,
+              gender: batch.gender,
+              log,
+            })
+            usedFallback = true
+            taskLog.usedTemplateFallback = true
+          }
+
+          if (!designCandidate) {
+            log(
+              `No ${placement} view candidate for group=${group} (layout=${layout}); ` +
+                `candidates=${extractMockupCandidatesFromTask(poll, group).length}`
+            )
+            taskLog.validation = { unknown: true, passed: false }
+            if (placement === "back" || printFile.printAreaUrl) {
+              await applyFallback("No view-matched mockup candidate")
+            } else {
+              mockupTasks.push(taskLog)
+              continue
+            }
+          } else {
+            const blankMatch = findMatchingBlankCandidate(blankCandidates, designCandidate)
+
+            if (!blankMatch) {
+              log(
+                `No matching blank for view=${designCandidate.view} option="${designCandidate.option}" — validation unknown`
+              )
+              taskLog.validation = {
+                unknown: true,
+                passed: false,
+                designOption: designCandidate.option,
+                designView: designCandidate.view,
               }
-              const printAreaBuf = await fetchImageBuffer(printFile.printAreaUrl)
-              const fallbackUrl = await generateTemplateFallbackMockup({
-                client,
-                catalogProductId,
-                variantId: vids[0],
-                placement,
-                printAreaPng: printAreaBuf,
-                log,
-              })
-              taskLog.usedTemplateFallback = true
-              finalShots = [
-                {
-                  url: fallbackUrl,
-                  kind: /lifestyle/i.test(group) ? "lifestyle" : "other",
-                  gender: batch.gender,
-                  title: `${group} · ${placement} (template)`,
+              await applyFallback("Could not match blank garment view/option")
+            } else {
+              const validation = await validateMockupAgainstMatchedBlank(
+                designCandidate.url,
+                blankMatch.url,
+                designCandidate,
+                blankMatch,
+                log
+              )
+              taskLog.validation = {
+                pixelDiffRatio: validation.pixelDiffRatio,
+                passed: validation.passed,
+                comparedToBlankUrl: blankMatch.url,
+                designOption: designCandidate.option,
+                designView: designCandidate.view,
+                blankOption: blankMatch.option,
+              }
+
+              if (!validation.passed) {
+                await applyFallback("Mockup failed pixel validation")
+              } else {
+                finalShot = shotFromCandidate(designCandidate, {
+                  group,
                   placement,
-                  templateFallback: true,
-                },
-              ]
+                  gender: batch.gender,
+                })
+              }
             }
           }
 
-          shots = shots.concat(finalShots)
+          if (!finalShot) {
+            mockupTasks.push(taskLog)
+            continue
+          }
+
+          if (taskLog.validation?.passed) {
+            if (placement === "front") hasPassingFront = true
+            if (placement === "back") hasPassingBack = true
+          } else if (usedFallback && placement === "back") {
+            hasPassingBack = true
+          }
+
+          shots.push(finalShot)
           mockupTasks.push(taskLog)
         } catch (e: unknown) {
           if (e instanceof ApparelMockupValidationError) throw e
@@ -335,8 +460,31 @@ export async function generateApparelPlacementMockups(opts: {
     }
   }
 
+  if (layout === "chestPlusBack") {
+    if (!hasPassingFront) {
+      throw new ApparelMockupValidationError(
+        "chestPlusBack requires at least one passing Front mockup with visible art"
+      )
+    }
+    if (!hasPassingBack) {
+      throw new ApparelMockupValidationError(
+        "chestPlusBack requires at least one passing Back mockup (or template fallback)"
+      )
+    }
+  }
+
   if (!shots.length) {
     throw new ApparelMockupValidationError("No mockup images were generated")
+  }
+
+  if (layout !== "chestPlusBack") {
+    shots = shots.filter(
+      (s) =>
+        s.placement === "front" &&
+        s.view !== "back" &&
+        s.view !== "left" &&
+        s.view !== "right"
+    )
   }
 
   shots = dedupeMockupShotsByScene(shots)
