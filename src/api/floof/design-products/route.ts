@@ -12,6 +12,7 @@ import {
   applyApparelProductGallery,
   maintainApparelPlacements,
 } from "../../../lib/maintain-apparel-placements"
+import { migrateEphemeralProductImages } from "../../../lib/migrate-ephemeral-product-images"
 import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
 import { startApparelMaintenanceJob } from "../../../lib/apparel-maintenance-jobs"
 import { parseApparelLayout } from "../../../lib/apparel-placement-layout"
@@ -122,6 +123,24 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     } catch (e: any) {
       console.error("[floof/design-products maintenance async]", e)
       res.status(500).json({ error: e.message || "Failed to start maintenance job" })
+    }
+    return
+  }
+
+  if (body.maintenance === "migrateEphemeralProductImages") {
+    try {
+      const result = await migrateEphemeralProductImages(req.scope, {
+        dryRun: body.dryRun === true || body.dryRun === "true",
+        handlePrefix:
+          body.handlePrefix != null ? String(body.handlePrefix) : undefined,
+        productIds: Array.isArray(body.productIds)
+          ? body.productIds.map(String)
+          : undefined,
+      })
+      res.status(200).json({ ok: true, maintenance: "migrateEphemeralProductImages", ...result })
+    } catch (e: any) {
+      console.error("[floof/design-products migrateEphemeralProductImages]", e)
+      res.status(500).json({ error: e.message || "migrateEphemeralProductImages failed" })
     }
     return
   }
@@ -385,6 +404,13 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       reviewOnly:
         "optional with regenerateApparelPlacements: collect all mockup candidates, no validation, no Medusa gallery",
       note: "Async by default — poll GET /floof/maintenance-jobs/:jobId",
+    },
+    migrateEphemeralProductImages: {
+      maintenance: "migrateEphemeralProductImages",
+      dryRun: true,
+      handlePrefix: "flower-crown-",
+      note:
+        "Sync — rehost api.floof.space/static and /floof/design-files gallery URLs to R2 (if configured) or Printful CDN",
     },
     applyGallery: {
       maintenance: "applyGallery",

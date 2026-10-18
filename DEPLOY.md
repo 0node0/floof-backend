@@ -42,6 +42,27 @@ In Railway → **Variables**:
 
 Optional cent overrides: `SHIPPING_FREE_THRESHOLD_CENTS`, `SHIPPING_FLAT_RATE_CENTS`.
 
+**Durable public files (recommended):** configure Cloudflare R2 so design staging and product image rehosting are not tied to the container disk.
+
+| Variable | Value / notes |
+|----------|----------------|
+| `R2_ACCOUNT_ID` | Cloudflare account id |
+| `R2_ACCESS_KEY_ID` | R2 API token |
+| `R2_SECRET_ACCESS_KEY` | R2 API secret |
+| `R2_BUCKET` | e.g. `floof-designs` |
+| `R2_PUBLIC_BASE_URL` | Public bucket URL, e.g. `https://designs.floof.space` |
+
+**Ephemeral disk:** Railway’s default container filesystem is **not** durable across redeploys (no volume is configured in `railway.toml`). Do not store product images under `api.floof.space/static/…` on disk — use R2 or Printful CDN. To fix existing products:
+
+```bash
+curl -X POST https://api.floof.space/floof/design-products \
+  -H "x-floof-admin-key: $FLOOF_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"maintenance":"migrateEphemeralProductImages","dryRun":true,"handlePrefix":"flower-crown-"}'
+```
+
+Then run again with `"dryRun":false`.
+
 ---
 
 ## 3. Database services
