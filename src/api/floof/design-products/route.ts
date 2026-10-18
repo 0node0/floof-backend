@@ -13,6 +13,9 @@ import {
   maintainApparelPlacements,
 } from "../../../lib/maintain-apparel-placements"
 import { migrateEphemeralProductImages } from "../../../lib/migrate-ephemeral-product-images"
+import { listPrintfulMockupStyles } from "../../../lib/mockup-style-catalog"
+import { generateOutkastGalleryForProduct } from "../../../lib/outkast-product-gallery"
+import PrintfulApiClient from "../../../modules/printful/client"
 import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
 import { startApparelMaintenanceJob } from "../../../lib/apparel-maintenance-jobs"
 import { parseApparelLayout } from "../../../lib/apparel-placement-layout"
@@ -123,6 +126,64 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     } catch (e: any) {
       console.error("[floof/design-products maintenance async]", e)
       res.status(500).json({ error: e.message || "Failed to start maintenance job" })
+    }
+    return
+  }
+
+  if (body.maintenance === "listMockupStyles") {
+    const token = process.env.PRINTFUL_API_TOKEN || process.env.PRINTFUL_API_KEY || ""
+    if (!token) {
+      res.status(503).json({ error: "PRINTFUL_API_TOKEN is not set" })
+      return
+    }
+    const client = new PrintfulApiClient(token, process.env.PRINTFUL_STORE_ID)
+    const ids: number[] = []
+    if (body.catalogProductId != null) ids.push(Number(body.catalogProductId))
+    if (Array.isArray(body.catalogProductIds)) {
+      for (const id of body.catalogProductIds) ids.push(Number(id))
+    }
+    if (!ids.length) {
+      res.status(400).json({
+        error: "catalogProductId or catalogProductIds required",
+        examples: { catalogProductId: 71, catalogProductIds: [71, 146] },
+      })
+      return
+    }
+    try {
+      const styles = await Promise.all(
+        ids.map((catalogProductId) => listPrintfulMockupStyles(client, catalogProductId))
+      )
+      res.status(200).json({
+        ok: true,
+        maintenance: "listMockupStyles",
+        catalogProductIds: ids,
+        styles,
+      })
+    } catch (e: any) {
+      console.error("[floof/design-products listMockupStyles]", e)
+      res.status(500).json({ error: e.message || "listMockupStyles failed" })
+    }
+    return
+  }
+
+  if (body.maintenance === "generateGallery") {
+    const handle = body.handle != null ? String(body.handle).trim() : ""
+    if (!handle) {
+      res.status(400).json({ error: "generateGallery requires handle" })
+      return
+    }
+    try {
+      const result = await generateOutkastGalleryForProduct(req.scope, {
+        handle,
+        dryRun: body.dryRun !== false && body.dryRun !== "false",
+        persistDurable: body.persistDurable === true || body.persistDurable === "true",
+        applyToProduct: body.applyToProduct === true || body.applyToProduct === "true",
+        maxColors: body.maxColors != null ? Number(body.maxColors) : undefined,
+      })
+      res.status(200).json({ ok: true, maintenance: "generateGallery", ...result })
+    } catch (e: any) {
+      console.error("[floof/design-products generateGallery]", e)
+      res.status(500).json({ error: e.message || "generateGallery failed" })
     }
     return
   }
@@ -404,6 +465,19 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       reviewOnly:
         "optional with regenerateApparelPlacements: collect all mockup candidates, no validation, no Medusa gallery",
       note: "Async by default — poll GET /floof/maintenance-jobs/:jobId",
+    },
+    listMockupStyles: {
+      maintenance: "listMockupStyles",
+      catalogProductIds: [71, 146],
+      note: "Bella+Canvas 3001 tee #71, Gildan 18500 hoodie #146 — sync POST with x-floof-admin-key",
+    },
+    generateGallery: {
+      maintenance: "generateGallery",
+      handle: "floof-dog-ear-club-tee",
+      dryRun: true,
+      applyToProduct: false,
+      note:
+        "Outkast-style studio mockups (ghost/flat front, back, closeups). dryRun default true; applyToProduct stays false until approved.",
     },
     migrateEphemeralProductImages: {
       maintenance: "migrateEphemeralProductImages",
