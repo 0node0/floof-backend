@@ -1,10 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest"
 import { applyApparelProductGallery } from "../../lib/maintain-apparel-placements"
-import { ensureDurablePublicImageUrl } from "../../lib/durable-public-image"
+import { ensureDurableGalleryImageUrl } from "../../lib/durable-public-image"
 import { replaceProductGalleryImages } from "../../lib/medusa-product-images"
 
 vi.mock("../../lib/durable-public-image", () => ({
-  ensureDurablePublicImageUrl: vi.fn(async (_url: string) => `durable:${_url}`),
+  ensureDurableGalleryImageUrl: vi.fn(async (_url: string) => `durable:${_url}`),
 }))
 
 vi.mock("../../lib/medusa-product-images", () => ({
@@ -19,7 +19,7 @@ vi.mock("../../lib/medusa-product-images", () => ({
 describe("applyApparelProductGallery", () => {
   beforeEach(() => {
     vi.stubEnv("PRINTFUL_API_TOKEN", "test-token")
-    vi.mocked(ensureDurablePublicImageUrl).mockClear()
+    vi.mocked(ensureDurableGalleryImageUrl).mockClear()
     vi.mocked(replaceProductGalleryImages).mockClear()
   })
 
@@ -30,7 +30,7 @@ describe("applyApparelProductGallery", () => {
       imageUrls: ["https://a.jpg", "https://b.jpg"],
     })
 
-    expect(ensureDurablePublicImageUrl).toHaveBeenCalledTimes(2)
+    expect(ensureDurableGalleryImageUrl).toHaveBeenCalledTimes(2)
     expect(replaceProductGalleryImages).toHaveBeenCalledWith(
       container,
       "prod_1",

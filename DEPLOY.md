@@ -61,7 +61,18 @@ curl -X POST https://api.floof.space/floof/design-products \
   -d '{"maintenance":"migrateEphemeralProductImages","dryRun":true,"handlePrefix":"flower-crown-"}'
 ```
 
+Also rehosts **temporary Printful mockup-generator URLs** (S3 `tmp`, non–file-library CDN). Target specific products with `handles`:
+
+```bash
+curl -X POST https://api.floof.space/floof/design-products \
+  -H "x-floof-admin-key: $FLOOF_ADMIN_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"maintenance":"migrateEphemeralProductImages","dryRun":true,"handles":["floof-dog-ear-club-tee"]}'
+```
+
 Then run again with `"dryRun":false`.
+
+Or via Medusa exec: `HANDLES=floof-dog-ear-club-tee DRY_RUN=true medusa exec ./src/scripts/migrate-ephemeral-product-images.ts`
 
 ---
 
