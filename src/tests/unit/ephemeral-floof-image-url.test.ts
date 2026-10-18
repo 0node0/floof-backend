@@ -1,8 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import {
   floofBackendPublicOrigin,
+  isDurableProductImageUrl,
   isEphemeralFloofHostedImageUrl,
+  isEphemeralPrintfulMockupTaskUrl,
+  isEphemeralProductGalleryImageUrl,
   isFloofStaticDiskImageUrl,
+  isPrintfulFileLibraryCdnUrl,
 } from "../../lib/ephemeral-floof-image-url"
 
 describe("ephemeral-floof-image-url", () => {
@@ -34,5 +38,35 @@ describe("ephemeral-floof-image-url", () => {
         "https://files.cdn.printful.com/files/abc/preview.png"
       )
     ).toBe(false)
+  })
+
+  it("detects ephemeral Printful mockup-task URLs", () => {
+    expect(
+      isEphemeralPrintfulMockupTaskUrl(
+        "https://printful-upload.s3-accelerate.amazonaws.com/tmp/mockup-abc.png"
+      )
+    ).toBe(true)
+    expect(
+      isEphemeralPrintfulMockupTaskUrl(
+        "https://files.cdn.printful.com/mockup-generator/abc/preview.png"
+      )
+    ).toBe(true)
+    expect(isPrintfulFileLibraryCdnUrl("https://files.cdn.printful.com/files/abc/preview.png")).toBe(
+      true
+    )
+    expect(
+      isEphemeralPrintfulMockupTaskUrl("https://files.cdn.printful.com/files/abc/preview.png")
+    ).toBe(false)
+    expect(
+      isEphemeralProductGalleryImageUrl(
+        "https://printful-upload.s3.amazonaws.com/tmp/foo.jpg"
+      )
+    ).toBe(true)
+  })
+
+  it("treats file-library CDN as durable", () => {
+    const durable = "https://files.cdn.printful.com/files/abc/preview.png"
+    expect(isDurableProductImageUrl(durable)).toBe(true)
+    expect(isEphemeralProductGalleryImageUrl(durable)).toBe(false)
   })
 })

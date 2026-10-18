@@ -1,8 +1,8 @@
 import type { MedusaContainer } from "@medusajs/framework/types"
 import { ContainerRegistrationKeys } from "@medusajs/framework/utils"
 import PrintfulApiClient from "../modules/printful/client"
-import { ensureDurablePublicImageUrl } from "./durable-public-image"
-import { isEphemeralFloofHostedImageUrl } from "./ephemeral-floof-image-url"
+import { ensureDurableGalleryImageUrl } from "./durable-public-image"
+import { isEphemeralProductGalleryImageUrl } from "./ephemeral-floof-image-url"
 import { replaceProductGalleryImages } from "./medusa-product-images"
 import { formatErrorMessage } from "./serialize-error"
 
@@ -10,6 +10,8 @@ export type MigrateEphemeralProductImagesInput = {
   dryRun?: boolean
   /** Only migrate products whose handle starts with this prefix (e.g. flower-crown-). */
   handlePrefix?: string
+  /** Only migrate products with these exact handles. */
+  handles?: string[]
   productIds?: string[]
 }
 
@@ -70,6 +72,9 @@ export async function migrateEphemeralProductImages(
   })
 
   const prefix = input.handlePrefix?.trim()
+  const handleFilter = input.handles?.length
+    ? new Set(input.handles.map((h) => String(h).trim()).filter(Boolean))
+    : null
   const idFilter = input.productIds?.length
     ? new Set(input.productIds.map(String))
     : null
@@ -85,6 +90,9 @@ export async function migrateEphemeralProductImages(
   if (idFilter) {
     targets = targets.filter((p) => idFilter.has(p.id))
   }
+  if (handleFilter) {
+    targets = targets.filter((p) => handleFilter.has(p.handle))
+  }
   if (prefix) {
     targets = targets.filter((p) => p.handle.startsWith(prefix))
   }
@@ -97,7 +105,7 @@ export async function migrateEphemeralProductImages(
 
   for (const product of targets) {
     const before = orderedGalleryUrls(product)
-    const needsWork = before.some((u) => isEphemeralFloofHostedImageUrl(u))
+    const needsWork = before.some((u) => isEphemeralProductGalleryImageUrl(u))
     if (!needsWork) {
       continue
     }
@@ -116,9 +124,10 @@ export async function migrateEphemeralProductImages(
       const after: string[] = []
       let anyChanged = false
       for (const url of before) {
-        if (isEphemeralFloofHostedImageUrl(url)) {
-          const durable = await ensureDurablePublicImageUrl(url, log, client, {
-            r2ObjectKey: `products/${product.handle}-art.png`,
+        if (isEphemeralProductGalleryImageUrl(url)) {
+          const durable = await ensureDurableGalleryImageUrl(url, log, client, {
+            r2ObjectKey: `products/${product.handle}-gallery-${after.length}.png`,
+            strict: true,
           })
           after.push(durable)
           anyChanged = anyChanged || durable !== url

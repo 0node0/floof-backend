@@ -252,6 +252,9 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
         dryRun: body.dryRun === true || body.dryRun === "true",
         handlePrefix:
           body.handlePrefix != null ? String(body.handlePrefix) : undefined,
+        handles: Array.isArray(body.handles)
+          ? body.handles.map((h: unknown) => String(h))
+          : undefined,
         productIds: Array.isArray(body.productIds)
           ? body.productIds.map(String)
           : undefined,
@@ -546,8 +549,9 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       maintenance: "migrateEphemeralProductImages",
       dryRun: true,
       handlePrefix: "flower-crown-",
+      handles: ["floof-dog-ear-club-tee"],
       note:
-        "Sync — rehost api.floof.space/static and /floof/design-files gallery URLs to R2 (if configured) or Printful CDN",
+        "Sync — rehost ephemeral gallery URLs (Floof /static, design-files, Printful mockup-task tmp) to R2 or Printful file-library CDN. Use handles[] for specific products.",
     },
     applyGallery: {
       maintenance: "applyGallery",

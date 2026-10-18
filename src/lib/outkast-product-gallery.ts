@@ -4,7 +4,8 @@ import sharp from "sharp"
 import PrintfulApiClient from "../modules/printful/client"
 import { buildCentredFrontPosition, detectApparelIsHoodie } from "./apparel-placement-layout"
 import { extractMockupCandidatesFromTask } from "./apparel-mockup-candidates"
-import { ensureDurablePublicImageUrl } from "./durable-public-image"
+import { ensureDurableGalleryImageUrl } from "./durable-public-image"
+import { isDurableProductImageUrl } from "./ephemeral-floof-image-url"
 import {
   listPrintfulMockupStyles,
   outkastGallerySlotsFromPlan,
@@ -373,8 +374,10 @@ export async function generateOutkastGalleryForProduct(
         }
 
         let durableUrl: string | undefined
-        if (persistDurable && !dryRun) {
-          durableUrl = await ensureDurablePublicImageUrl(picked.url, log, client)
+        if (persistDurable) {
+          durableUrl = await ensureDurableGalleryImageUrl(picked.url, log, client, {
+            strict: true,
+          })
         }
 
         shots.push({
@@ -400,6 +403,12 @@ export async function generateOutkastGalleryForProduct(
 
   let appliedToProduct = false
   if (applyToProduct && !dryRun && galleryUrls.length) {
+    const notDurable = galleryUrls.filter((u) => !isDurableProductImageUrl(u))
+    if (notDurable.length) {
+      throw new Error(
+        `Cannot apply gallery for ${handle}: ${notDurable.length} image URL(s) are not durable (rehost failed or was skipped). First: ${notDurable[0]?.slice(0, 120)}`
+      )
+    }
     await applyApparelProductGallery(container, {
       productId: product.id,
       imageUrls: galleryUrls,
