@@ -1,4 +1,5 @@
 import type PrintfulApiClient from "../modules/printful/client"
+import { isEphemeralFloofHostedImageUrl } from "./ephemeral-floof-image-url"
 
 export type SyncVariantFile = {
   id?: number
@@ -8,12 +9,10 @@ export type SyncVariantFile = {
   thumbnail_url?: string
 }
 
-/** Staged uploads on our API — wiped on redeploy / not durable for Printful mockups. */
+/** Staged uploads and Railway `/static` disk — wiped on redeploy / not durable for Printful mockups. */
 export function isEphemeralFloofDesignUrl(url: string | undefined | null): boolean {
   if (!url?.trim()) return true
-  if (/\/floof\/design-files\//i.test(url)) return true
-  if (/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(url)) return true
-  return false
+  return isEphemeralFloofHostedImageUrl(url)
 }
 
 /** Printful file library CDN — safe for mockup-generator image_url. */

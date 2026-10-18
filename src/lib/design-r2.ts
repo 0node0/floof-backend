@@ -44,8 +44,35 @@ export function r2ObjectKeyForDesign(id: string): string {
   return `designs/${id}`
 }
 
+export function publicR2ObjectUrl(cfg: R2Config, objectKey: string): string {
+  const key = objectKey.replace(/^\/+/, "")
+  return `${cfg.publicBaseUrl}/${key}`
+}
+
 export function publicR2DesignUrl(cfg: R2Config, id: string): string {
-  return `${cfg.publicBaseUrl}/${r2ObjectKeyForDesign(id)}`
+  return publicR2ObjectUrl(cfg, r2ObjectKeyForDesign(id))
+}
+
+export async function putPublicObjectToR2(
+  objectKey: string,
+  buffer: Buffer,
+  contentType: string
+): Promise<string> {
+  const cfg = readR2ConfigFromEnv()
+  if (!cfg) throw new Error("R2 is not configured")
+
+  const key = objectKey.replace(/^\/+/, "")
+  const s3 = client(cfg)
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: cfg.bucket,
+      Key: key,
+      Body: buffer,
+      ContentType: contentType,
+      CacheControl: "public, max-age=31536000, immutable",
+    })
+  )
+  return publicR2ObjectUrl(cfg, key)
 }
 
 export async function putDesignToR2(

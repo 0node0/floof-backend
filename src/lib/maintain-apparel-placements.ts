@@ -28,7 +28,7 @@ import { withPrintfulRetries } from "./printful-retry"
 import type { MockupTaskRunLog } from "./printful-mockup-generator"
 import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
 import type { ApparelMockupReviewCandidate } from "./apparel-mockups"
-import { rehostImageUrlViaPrintful } from "./rehost-image-url"
+import { ensureDurablePublicImageUrl } from "./durable-public-image"
 
 export type MaintainApparelPlacementsInput = {
   dryRun?: boolean
@@ -588,7 +588,7 @@ export async function applyApparelProductGallery(
   const client = makeClient()
   const rehostedUrls: string[] = []
   for (const url of imageUrls) {
-    rehostedUrls.push(await rehostImageUrlViaPrintful(client, url, log))
+    rehostedUrls.push(await ensureDurablePublicImageUrl(url, log, client))
   }
 
   const replaced = await replaceProductGalleryImages(
