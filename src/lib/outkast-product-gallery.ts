@@ -7,6 +7,7 @@ import { extractMockupCandidatesFromTask } from "./apparel-mockup-candidates"
 import { ensureDurablePublicImageUrl } from "./durable-public-image"
 import {
   listPrintfulMockupStyles,
+  outkastGallerySlotsFromPlan,
   planOutkastGalleryStyles,
   type ListMockupStylesResult,
   type MockupStyleCategory,
@@ -26,7 +27,9 @@ import {
 import { runPrintfulMockupTask, type MockupCreateTaskRequest } from "./printful-mockup-generator"
 import { uploadPngToPrintfulFileLibrary } from "./printful-file-upload"
 import { resolveFullPrintfulFileUrlById } from "./printful-file-url"
+import { formatErrorMessage } from "./serialize-error"
 import { withPrintfulRetries } from "./printful-retry"
+import { throttlePrintfulMockupCreateTask } from "./printful-mockup-rate-limit"
 import { readDesignSourceFromMetadata } from "./mug-design-source"
 import { applyApparelProductGallery } from "./maintain-apparel-placements"
 
@@ -41,7 +44,8 @@ export type GenerateOutkastGalleryInput = {
 }
 
 export type OutkastGalleryShot = {
-  role: "front" | "back" | "detail" | "extra"
+  role: "ghost-front" | "zoomed-in" | "back" | "product-details"
+  status: "ok" | "failed"
   optionGroup: string
   category: MockupStyleCategory
   placement: string
@@ -49,8 +53,9 @@ export type OutkastGalleryShot = {
   variantId?: number
   option?: string
   view?: string
-  mockupUrl: string
+  mockupUrl?: string
   durableUrl?: string
+  error?: string
 }
 
 export type GenerateOutkastGalleryResult = {
@@ -172,7 +177,10 @@ export async function generateOutkastGalleryForProduct(
   const persistDurable =
     !dryRun && (input.persistDurable === true || input.persistDurable !== false)
   const applyToProduct = input.applyToProduct === true
-  const maxColors = Math.min(12, Math.max(1, input.maxColors ?? 6))
+  const maxColors = Math.min(
+    12,
+    Math.max(1, input.maxColors ?? (dryRun ? 1 : 6))
+  )
 
   const logs: string[] = []
   const log = (m: string) => {
@@ -262,17 +270,12 @@ export async function generateOutkastGalleryForProduct(
   )
 
   const shots: OutkastGalleryShot[] = []
-  const tasks: Array<{
-    role: OutkastGalleryShot["role"]
-    optionGroup: string
-    placement: string
-    category: MockupStyleCategory
-    variantIds: number[]
-    imageUrl: string
-    position: Record<string, number>
-  }> = []
+  const slots = outkastGallerySlotsFromPlan(plan)
+  if (!slots.length) {
+    throw new Error("No Outkast gallery mockup groups matched Printful option_groups")
+  }
 
-  const blankBackUrl = await blankPrintFileUrl(client, frontDims.width, frontDims.height, log)
+  let blankBackUrl: string | undefined
   const backPosition = buildPrintPositionFromPrintfiles(
     printfilesRaw.printfiles || [],
     printfilesRaw.variant_printfiles,
@@ -281,129 +284,119 @@ export async function generateOutkastGalleryForProduct(
     "apparel"
   )
 
-  const pushTask = (row: Omit<(typeof tasks)[number], "variantIds">) => {
-    tasks.push({ ...row, variantIds })
-  }
-
-  if (plan.frontGroup) {
-    pushTask({
-      role: "front",
-      optionGroup: plan.frontGroup,
-      placement: "front",
-      category: plan.frontGroup.toLowerCase().includes("ghost") ? "ghost" : "flat",
-      imageUrl: artwork.url,
-      position: frontPosition,
-    })
-  }
-  if (plan.backGroup) {
-    pushTask({
-      role: "back",
-      optionGroup: plan.backGroup,
-      placement: "back",
-      category: "back",
-      imageUrl: blankBackUrl,
-      position: backPosition,
-    })
-  }
-  for (const dg of plan.detailGroups.slice(0, 4)) {
-    pushTask({
-      role: "detail",
-      optionGroup: dg,
-      placement: "front",
-      category: "detail",
-      imageUrl: artwork.url,
-      position: frontPosition,
-    })
-  }
-  for (const eg of plan.extraGroups.slice(0, 2)) {
-    pushTask({
-      role: "extra",
-      optionGroup: eg,
-      placement: "front",
-      category: categorizeExtra(eg),
-      imageUrl: artwork.url,
-      position: frontPosition,
-    })
-  }
-
   const gapMs = Number(process.env.PRINTFUL_MOCKUP_TASK_DELAY_MS || 3000)
 
-  for (let i = 0; i < tasks.length; i++) {
-    const t = tasks[i]
-    if (i > 0) await new Promise((r) => setTimeout(r, gapMs))
-
-    const filePayload = buildApparelMockupFilePayload({
-      placement: t.placement,
-      designSourceUrl: t.imageUrl,
-      printPosition: t.position,
-      artworkWidth: artwork.width,
-      artworkHeight: artwork.height,
-    })
-
-    const request: MockupCreateTaskRequest = {
-      variant_ids: t.variantIds,
-      format: "png",
-      files: [
-        {
-          placement: filePayload.placement,
-          image_url: filePayload.image_url,
-          position: filePayload.position,
-        },
-      ],
-      option_groups: [t.optionGroup],
-      options: mockupCreateOptionsForPlacement(t.placement),
-    }
-
-    log(
-      `Mockup ${t.role} group=${t.optionGroup} placement=${t.placement} variants=${JSON.stringify(t.variantIds)}`
-    )
-
-    const taskLog = await withPrintfulRetries(
-      `Outkast mockup ${t.optionGroup}`,
-      log,
-      () =>
-        runPrintfulMockupTask(client, catalogProductId, request, {
-          optionGroupLabel: t.optionGroup,
-          log,
-        }),
-      4,
-      gapMs
-    )
-
-    const poll = taskLog.pollResponse
-    if (!poll) {
-      log(`No poll response for ${t.optionGroup}`)
-      continue
-    }
+  for (let i = 0; i < slots.length; i++) {
+    const slot = slots[i]
+    const placement = slot.slot === "back" ? "back" : "front"
+    const category = categoryForSlot(slot.slot, slot.optionGroup)
 
     for (const cv of colorVariants) {
-      const picked = pickBestCandidateUrl(poll, t.optionGroup, t.placement, cv.variantId)
-      if (!picked) {
-        log(`No mockup URL for ${t.optionGroup} color=${cv.color}`)
-        continue
-      }
-
-      let durableUrl: string | undefined
-      if (persistDurable && !dryRun) {
-        durableUrl = await ensureDurablePublicImageUrl(picked.url, log, client)
-      }
-
-      shots.push({
-        role: t.role,
-        optionGroup: t.optionGroup,
-        category: t.category,
-        placement: t.placement,
+      const baseShot: OutkastGalleryShot = {
+        role: slot.slot,
+        status: "failed",
+        optionGroup: slot.optionGroup,
+        category,
+        placement,
         color: cv.color,
         variantId: cv.variantId,
-        option: picked.option,
-        view: picked.view,
-        mockupUrl: picked.url,
-        durableUrl,
-      })
+      }
+
+      try {
+        if (i > 0 || colorVariants.indexOf(cv) > 0) {
+          await throttlePrintfulMockupCreateTask()
+        }
+
+        let imageUrl = artwork.url
+        let position = frontPosition
+        if (slot.slot === "back") {
+          if (!blankBackUrl) {
+            blankBackUrl = await blankPrintFileUrl(
+              client,
+              frontDims.width,
+              frontDims.height,
+              log
+            )
+          }
+          imageUrl = blankBackUrl
+          position = backPosition
+        }
+
+        const filePayload = buildApparelMockupFilePayload({
+          placement,
+          designSourceUrl: imageUrl,
+          printPosition: position,
+          artworkWidth: artwork.width,
+          artworkHeight: artwork.height,
+        })
+
+        const request: MockupCreateTaskRequest = {
+          variant_ids: [cv.variantId],
+          format: "png",
+          files: [
+            {
+              placement: filePayload.placement,
+              image_url: filePayload.image_url,
+              position: filePayload.position,
+            },
+          ],
+          option_groups: [slot.optionGroup],
+          options: mockupCreateOptionsForPlacement(placement),
+        }
+
+        log(
+          `Mockup ${slot.slot} group=${slot.optionGroup} placement=${placement} variant=${cv.variantId} color=${cv.color}`
+        )
+
+        const taskLog = await withPrintfulRetries(
+          `Outkast mockup ${slot.optionGroup}`,
+          log,
+          () =>
+            runPrintfulMockupTask(client, catalogProductId, request, {
+              optionGroupLabel: slot.optionGroup,
+              log,
+            }),
+          4,
+          gapMs
+        )
+
+        const poll = taskLog.pollResponse
+        if (!poll) {
+          shots.push({ ...baseShot, error: "Mockup task missing poll response" })
+          continue
+        }
+
+        const picked = pickBestCandidateUrl(poll, slot.optionGroup, placement, cv.variantId)
+        if (!picked) {
+          shots.push({ ...baseShot, error: "No mockup URL in Printful response" })
+          continue
+        }
+
+        let durableUrl: string | undefined
+        if (persistDurable && !dryRun) {
+          durableUrl = await ensureDurablePublicImageUrl(picked.url, log, client)
+        }
+
+        shots.push({
+          ...baseShot,
+          status: "ok",
+          option: picked.option,
+          view: picked.view,
+          mockupUrl: picked.url,
+          durableUrl,
+        })
+      } catch (e: unknown) {
+        const msg = formatErrorMessage(e)
+        log(`Shot failed ${slot.slot}/${cv.color}: ${msg}`)
+        shots.push({ ...baseShot, error: msg })
+      }
     }
   }
 
-  const galleryUrls = shots.map((s) => s.durableUrl || s.mockupUrl).filter(Boolean)
+  const galleryUrls = shots
+    .filter((s) => s.status === "ok")
+    .map((s) => s.durableUrl || s.mockupUrl)
+    .filter(Boolean) as string[]
 
   let appliedToProduct = false
   if (applyToProduct && !dryRun && galleryUrls.length) {
@@ -431,9 +424,15 @@ export async function generateOutkastGalleryForProduct(
   }
 }
 
-function categorizeExtra(name: string): MockupStyleCategory {
-  const n = name.toLowerCase()
-  if (/folded/.test(n)) return "folded"
-  if (/hanging/.test(n)) return "hanging"
+function categoryForSlot(
+  slot: OutkastGalleryShot["role"],
+  optionGroup: string
+): MockupStyleCategory {
+  if (slot === "ghost-front") return "ghost"
+  if (slot === "zoomed-in") return "closeup"
+  if (slot === "back") return "back"
+  if (slot === "product-details") return "detail"
+  if (/ghost/i.test(optionGroup)) return "ghost"
+  if (/flat/i.test(optionGroup)) return "flat"
   return "other"
 }

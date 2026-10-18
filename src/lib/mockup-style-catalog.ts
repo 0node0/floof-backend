@@ -39,8 +39,9 @@ export function categorizeMockupStyleName(name: string): MockupStyleCategory {
   if (/^back$/i.test(g) || /\bback\s+view\b/.test(g) || /^flat\s+back/i.test(g)) return "back"
   if (/^folded/i.test(g)) return "folded"
   if (/^hanging/i.test(g)) return "hanging"
-  if (/close.?up|detail|zoom|collar|label|stitch|fabric|sleeve|cuff|hem/i.test(g)) {
-    return /close.?up/i.test(g) ? "closeup" : "detail"
+  if (/zoomed\s*in|close.?up/i.test(g)) return "closeup"
+  if (/product\s+details|detail|collar|label|stitch|fabric|sleeve|cuff|hem/i.test(g)) {
+    return "detail"
   }
   if (/lifestyle|on.?model|men'?s|women'?s/i.test(g)) return "lifestyle"
   return "other"
@@ -82,30 +83,60 @@ export async function listPrintfulMockupStyles(
 }
 
 export type OutkastGalleryPlan = {
-  frontGroup: string | null
+  ghostFront: string | null
+  zoomedIn: string | null
+  /** Back mockup group (Back preferred; Flat fallback for flat back). */
   backGroup: string | null
-  detailGroups: string[]
-  extraGroups: string[]
+  productDetails: string | null
 }
 
-/** Studio gallery: ghost (else flat) front, flat back, then close-up / detail groups. */
+function findOptionGroup(groups: string[], patterns: RegExp[]): string | null {
+  for (const pattern of patterns) {
+    const hit = groups.find((g) => pattern.test(g.trim()))
+    if (hit) return hit
+  }
+  return null
+}
+
+/**
+ * Outkast PDP gallery: Ghost front, Zoomed in, Ghost/Flat back, Product details.
+ * Matches Printful names on Bella 3001 (#71): Ghost, Zoomed in, Back, Product details.
+ */
 export function planOutkastGalleryStyles(optionGroupNames: string[]): OutkastGalleryPlan {
   const groups = [...new Set(optionGroupNames.map((g) => g.trim()).filter(Boolean))]
-  const ghost = groups.find((g) => categorizeMockupStyleName(g) === "ghost")
-  const flat = groups.find((g) => categorizeMockupStyleName(g) === "flat")
-  const back = groups.find((g) => categorizeMockupStyleName(g) === "back")
-  const detailGroups = groups.filter((g) => {
-    const c = categorizeMockupStyleName(g)
-    return c === "closeup" || c === "detail"
-  })
-  const extraGroups = groups.filter((g) => {
-    const c = categorizeMockupStyleName(g)
-    return c === "folded" || c === "hanging"
-  })
+  const ghostFront =
+    findOptionGroup(groups, [/^ghost$/i]) ||
+    findOptionGroup(groups, [/\bghost\b/i])
+  const zoomedIn = findOptionGroup(groups, [/^zoomed\s*in$/i, /zoomed\s*in/i])
+  const backGroup =
+    findOptionGroup(groups, [/^back$/i]) ||
+    findOptionGroup(groups, [/^flat$/i, /flat\s+back/i])
+  const productDetails = findOptionGroup(groups, [
+    /^product\s+details$/i,
+    /product\s+details/i,
+  ])
   return {
-    frontGroup: ghost || flat || null,
-    backGroup: back || null,
-    detailGroups,
-    extraGroups,
+    ghostFront,
+    zoomedIn,
+    backGroup,
+    productDetails,
   }
+}
+
+/** Ordered slots for gallery generation (skips missing groups). */
+export function outkastGallerySlotsFromPlan(plan: OutkastGalleryPlan): Array<{
+  slot: "ghost-front" | "zoomed-in" | "back" | "product-details"
+  optionGroup: string
+}> {
+  const slots: Array<{
+    slot: "ghost-front" | "zoomed-in" | "back" | "product-details"
+    optionGroup: string
+  }> = []
+  if (plan.ghostFront) slots.push({ slot: "ghost-front", optionGroup: plan.ghostFront })
+  if (plan.zoomedIn) slots.push({ slot: "zoomed-in", optionGroup: plan.zoomedIn })
+  if (plan.backGroup) slots.push({ slot: "back", optionGroup: plan.backGroup })
+  if (plan.productDetails) {
+    slots.push({ slot: "product-details", optionGroup: plan.productDetails })
+  }
+  return slots
 }

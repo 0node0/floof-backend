@@ -15,6 +15,10 @@ import {
 import { migrateEphemeralProductImages } from "../../../lib/migrate-ephemeral-product-images"
 import { listPrintfulMockupStyles } from "../../../lib/mockup-style-catalog"
 import { generateOutkastGalleryForProduct } from "../../../lib/outkast-product-gallery"
+import {
+  getOutkastGalleryJob,
+  startOutkastGalleryJob,
+} from "../../../lib/outkast-gallery-jobs"
 import PrintfulApiClient from "../../../modules/printful/client"
 import { startMugMaintenanceJob } from "../../../lib/mug-maintenance-jobs"
 import { startApparelMaintenanceJob } from "../../../lib/apparel-maintenance-jobs"
@@ -166,21 +170,75 @@ export async function POST(req: MedusaRequest, res: MedusaResponse) {
     return
   }
 
+  if (body.maintenance === "getGalleryJob") {
+    const jobId = body.jobId != null ? String(body.jobId).trim() : ""
+    if (!jobId) {
+      res.status(400).json({ error: "getGalleryJob requires jobId" })
+      return
+    }
+    const job = getOutkastGalleryJob(jobId)
+    if (!job) {
+      res.status(404).json({ error: "Gallery job not found or expired" })
+      return
+    }
+    res.status(200).json({
+      ok: true,
+      maintenance: "getGalleryJob",
+      jobId: job.id,
+      status: job.status,
+      createdAt: job.createdAt,
+      startedAt: job.startedAt,
+      finishedAt: job.finishedAt,
+      error: job.error,
+      shots: job.result?.shots ?? [],
+      galleryUrls: job.result?.galleryUrls ?? [],
+      result: job.result,
+    })
+    return
+  }
+
   if (body.maintenance === "generateGallery") {
     const handle = body.handle != null ? String(body.handle).trim() : ""
     if (!handle) {
       res.status(400).json({ error: "generateGallery requires handle" })
       return
     }
+    const galleryInput = {
+      handle,
+      dryRun: body.dryRun !== false && body.dryRun !== "false",
+      persistDurable: body.persistDurable === true || body.persistDurable === "true",
+      applyToProduct: body.applyToProduct === true || body.applyToProduct === "true",
+      maxColors: body.maxColors != null ? Number(body.maxColors) : undefined,
+    }
+    const runSync = body.sync === true || body.sync === "true"
+    if (runSync) {
+      try {
+        const result = await generateOutkastGalleryForProduct(req.scope, galleryInput)
+        res.status(200).json({ ok: true, maintenance: "generateGallery", sync: true, ...result })
+      } catch (e: any) {
+        console.error("[floof/design-products generateGallery sync]", e)
+        res.status(500).json({ error: e.message || "generateGallery failed" })
+      }
+      return
+    }
+
     try {
-      const result = await generateOutkastGalleryForProduct(req.scope, {
-        handle,
-        dryRun: body.dryRun !== false && body.dryRun !== "false",
-        persistDurable: body.persistDurable === true || body.persistDurable === "true",
-        applyToProduct: body.applyToProduct === true || body.applyToProduct === "true",
-        maxColors: body.maxColors != null ? Number(body.maxColors) : undefined,
+      const job = startOutkastGalleryJob(req.scope, galleryInput)
+      const base =
+        process.env.MEDUSA_BACKEND_URL ||
+        process.env.BACKEND_URL ||
+        "http://localhost:9000"
+      const statusUrl = `${base.replace(/\/$/, "")}/floof/maintenance-jobs/${job.id}`
+      res.status(202).json({
+        ok: true,
+        maintenance: "generateGallery",
+        async: true,
+        jobId: job.id,
+        status: job.status,
+        statusUrl,
+        pollMaintenanceJob: `GET ${statusUrl} with x-floof-admin-key`,
+        pollGalleryJob: `POST /floof/design-products { maintenance: "getGalleryJob", jobId: "${job.id}" }`,
       })
-      res.status(200).json({ ok: true, maintenance: "generateGallery", ...result })
     } catch (e: any) {
       console.error("[floof/design-products generateGallery]", e)
       res.status(500).json({ error: e.message || "generateGallery failed" })
@@ -477,7 +535,12 @@ export async function GET(req: MedusaRequest, res: MedusaResponse) {
       dryRun: true,
       applyToProduct: false,
       note:
-        "Outkast-style studio mockups (ghost/flat front, back, closeups). dryRun default true; applyToProduct stays false until approved.",
+        "Async by default (202 + jobId). Ghost front, Zoomed in, Back, Product details. dryRun uses 1 color.",
+    },
+    getGalleryJob: {
+      maintenance: "getGalleryJob",
+      jobId: "gallery_…",
+      note: "Or GET /floof/maintenance-jobs/:jobId",
     },
     migrateEphemeralProductImages: {
       maintenance: "migrateEphemeralProductImages",
